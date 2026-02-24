@@ -79,6 +79,9 @@ def do_buy(info: dict):
         return
 
     current_price = get_current_price(TICKER)
+    if current_price is None:
+        logger.error(f"[{TICKER}] 현재가 조회 실패, 매수 생략")
+        return
     ma5  = info.get("ma5", 0)
     ma20 = info.get("ma20", 0)
 
@@ -128,6 +131,9 @@ def do_sell(info: dict):
         return
 
     current_price = get_current_price(TICKER)
+    if current_price is None:
+        logger.error(f"[{TICKER}] 현재가 조회 실패, 매도 생략")
+        return
     sell_amount   = volume * current_price
     ma5  = info.get("ma5", 0)
     ma20 = info.get("ma20", 0)
@@ -182,8 +188,8 @@ def trading_job():
         # 신호 없음 → 대기 (debug 로그는 strategy 내부에서 출력)
 
     except Exception as e:
-        logger.error(f"트레이딩 루프 오류: {e}")
-        send_error_alert(f"트레이딩 루프 오류:\n{e}")
+        logger.exception(f"트레이딩 루프 오류: {e}")
+        send_error_alert(f"트레이딩 루프 오류:\n{type(e).__name__}: {e}")
 
 
 def print_status():
