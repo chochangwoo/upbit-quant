@@ -53,18 +53,6 @@ def get_balance_krw() -> float:
     if not upbit:
         return 0
     try:
-        import requests, jwt, uuid
-        # 실제 아웃바운드 IP 확인
-        my_ip = requests.get("https://api.ipify.org", timeout=5).text
-        logger.info(f"[잔고 진단] Railway 아웃바운드 IP: {my_ip}")
-        # Upbit API 직접 호출
-        access_key = os.getenv("UPBIT_ACCESS_KEY")
-        secret_key = os.getenv("UPBIT_SECRET_KEY")
-        payload = {"access_key": access_key, "nonce": str(uuid.uuid4())}
-        jwt_token = jwt.encode(payload, secret_key, algorithm="HS256")
-        headers = {"Authorization": f"Bearer {jwt_token}"}
-        resp = requests.get("https://api.upbit.com/v1/accounts", headers=headers, timeout=10)
-        logger.info(f"[잔고 진단] Upbit API 응답: status={resp.status_code}, body={resp.text[:300]}")
         balance = upbit.get_balance("KRW")
         return balance if balance else 0
     except Exception as e:
