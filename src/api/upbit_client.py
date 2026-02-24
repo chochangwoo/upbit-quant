@@ -54,6 +54,7 @@ def get_balance_krw() -> float:
         return 0
     try:
         balance = upbit.get_balance("KRW")
+        logger.info(f"[잔고 진단] KRW 원시값: {balance!r} (타입: {type(balance).__name__})")
         return balance if balance else 0
     except Exception as e:
         logger.error(f"원화 잔고 조회 실패: {e}")
