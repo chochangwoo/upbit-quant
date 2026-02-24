@@ -200,7 +200,7 @@ def print_status():
         logger.info(
             f"[상태] 모드: {mode} | "
             f"원화: {krw:,.0f}원 | "
-            f"코인: {coin:.6f if coin else 0} | "
+            f"코인: {(coin if coin else 0):.6f} | "
             f"MA{SHORT_WINDOW}: {ma5:,.0f} | "
             f"MA{LONG_WINDOW}: {ma20:,.0f} | "
             f"{trend}"
