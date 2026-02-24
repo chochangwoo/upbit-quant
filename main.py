@@ -8,6 +8,7 @@
   데드크로스 감지 (MA5 < MA20 전환) → 매도
   1시간마다 현재 MA 상태 로그 출력
 """
+import signal
 import sys
 import time
 import schedule
@@ -42,7 +43,7 @@ from config.settings import (
 )
 
 # ─────────────────────────────────────────
-# 로그 설정: 콘솔 + 파일 동시 저장
+# 로그 설정: 콘솔 출력 (Railway는 stdout 캡처)
 # ─────────────────────────────────────────
 logger.remove()
 logger.add(
@@ -50,14 +51,6 @@ logger.add(
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
     level="INFO",
     colorize=True,
-)
-logger.add(
-    "logs/trading_{time:YYYY-MM-DD}.log",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
-    level="DEBUG",
-    rotation="00:00",    # 매일 자정에 새 파일
-    retention="30 days", # 30일치 보관
-    encoding="utf-8",
 )
 
 # ─────────────────────────────────────────
@@ -240,13 +233,21 @@ def main():
 
     logger.info("스케줄러 시작. Ctrl+C 로 종료합니다.")
     while True:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            logger.exception(f"스케줄러 오류: {e}")
         time.sleep(1)
 
 
+def _shutdown(signum, frame):
+    """SIGTERM / SIGINT 수신 시 정상 종료합니다 (Railway 컨테이너 종료 대응)."""
+    logger.info("종료 신호 수신. 자동매매 시스템을 종료합니다.")
+    send_message("자동매매 시스템이 종료되었습니다.")
+    sys.exit(0)
+
+
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        logger.info("사용자가 프로그램을 종료했습니다.")
-        send_message("자동매매 시스템이 종료되었습니다.")
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+    main()
