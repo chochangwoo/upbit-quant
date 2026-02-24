@@ -1,24 +1,25 @@
 """
 전역 설정값 관리
-.env 파일의 값을 읽어 사용하기 편하게 정리합니다.
+settings.yaml과 .env 파일의 값을 읽어 사용하기 편하게 정리합니다.
 """
 import os
+import yaml
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# 매매 대상 코인 목록
-TARGET_COINS = os.getenv("TARGET_COINS", "KRW-BTC").split(",")
+# ─── settings.yaml 로드 ────────────────────────────────
+_yaml_path = os.path.join(os.path.dirname(__file__), "settings.yaml")
+with open(_yaml_path, "r", encoding="utf-8") as f:
+    _cfg = yaml.safe_load(f)
 
-# 1회 매수 금액 (원)
-ORDER_AMOUNT = int(os.getenv("ORDER_AMOUNT", "10000"))
+# ─── 전략 설정 (MA 크로스 5/20) ───────────────────────
+STRATEGY_NAME  = _cfg["strategy"]["name"]           # "ma_cross"
+SHORT_WINDOW   = _cfg["strategy"]["short_window"]    # 5
+LONG_WINDOW    = _cfg["strategy"]["long_window"]     # 20
+TICKER         = _cfg["strategy"]["ticker"]          # "KRW-BTC"
+INVEST_RATIO   = _cfg["strategy"]["invest_ratio"]    # 0.95
 
-# 변동성 돌파 K값
-VOLATILITY_K = float(os.getenv("VOLATILITY_K", "0.5"))
-
-# 실거래 여부
-LIVE_TRADING = os.getenv("LIVE_TRADING", "false").lower() == "true"
-
-# 매도 시간: 오전 8시 50분
-SELL_HOUR = 8
-SELL_MINUTE = 50
+# ─── 거래 기본 설정 ────────────────────────────────────
+# LIVE_TRADING은 .env 우선, 없으면 settings.yaml 값 사용
+LIVE_TRADING = os.getenv("LIVE_TRADING", str(_cfg["trading"]["live_trading"])).lower() == "true"

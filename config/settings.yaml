@@ -6,50 +6,26 @@
 
 # ─── 매매 기본 설정 ───────────────────────────────
 trading:
-  # 거래할 코인 목록
-  target_coins:
-    - KRW-BTC
-    - KRW-ETH
-    - KRW-XRP
-  # 1회 매수 금액 (원)
-  order_amount: 10000
   # 실거래 여부 (true = 실거래, false = 시뮬레이션)
   live_trading: false
 
-# ─── 변동성 돌파 전략 설정 ────────────────────────
+# ─── 현재 메인 전략: 이동평균 크로스 5/20 ──────────
 strategy:
-  volatility_breakout:
-    # K값: 목표가 계산에 사용하는 변동성 비율
-    # 낮을수록 매매 빈도 높음 (0.3~0.7 권장)
-    k: 0.5
-    # 매도 시간 (HH:MM 형식)
-    sell_time: "08:50"
-    # 새 거래일 시작 시간
-    reset_time: "09:00"
+  name: "ma_cross"
+  # 단기 이동평균 기간 (일)
+  short_window: 5
+  # 장기 이동평균 기간 (일)
+  long_window: 20
+  # 거래 코인
+  ticker: "KRW-BTC"
+  # 보유 현금의 투자 비율 (0.95 = 95%)
+  invest_ratio: 0.95
 
-  dual_momentum:
-    # 모멘텀 계산 기간 (일)
-    lookback_days: 12
-    # 무위험 자산 기준 (현금 보유 판단용 수익률, %)
-    risk_free_rate: 0.0
-
-  rsi_bollinger:
-    # RSI 계산 기간
-    rsi_period: 14
-    # RSI 과매수 기준 (이 값 이상이면 매도 신호)
-    rsi_overbought: 70
-    # RSI 과매도 기준 (이 값 이하면 매수 신호)
-    rsi_oversold: 30
-    # 볼린저밴드 기간
-    bb_period: 20
-    # 볼린저밴드 표준편차 배수
-    bb_std: 2.0
-
-  ma_cross:
-    # 단기 이동평균선 기간 (일)
-    short_ma: 5
-    # 장기 이동평균선 기간 (일)
-    long_ma: 20
+# ─── 보조 전략: 변동성 돌파 (참고용) ───────────────
+volatility_breakout:
+  k: 0.5
+  sell_time: "08:50"
+  reset_time: "09:00"
 
 # ─── 일일 리포트 설정 ─────────────────────────────
 report:

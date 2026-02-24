@@ -12,17 +12,17 @@ def send_message(message: str) -> bool:
     텔레그램으로 메시지를 전송합니다.
     """
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    chat_id   = os.getenv("TELEGRAM_CHAT_ID")
 
     if not bot_token or not chat_id:
         logger.warning("텔레그램 설정이 없습니다. .env 파일을 확인하세요.")
         return False
 
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    url     = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML"  # <b>굵게</b>, <i>기울임</i> 사용 가능
+        "chat_id"   : chat_id,
+        "text"      : message,
+        "parse_mode": "HTML",
     }
 
     try:
@@ -38,10 +38,36 @@ def send_message(message: str) -> bool:
         return False
 
 
-def send_buy_alert(ticker: str, price: float, amount: float):
-    """매수 알림 전송"""
+def send_golden_cross_alert(ticker: str, price: float, amount: float, ma5: float, ma20: float):
+    """골든크로스 매수 알림 전송"""
     message = (
-        f"🟢 <b>매수 완료</b>\n"
+        f"<b>매수 완료 - 골든크로스</b>\n"
+        f"코인: {ticker}\n"
+        f"현재가: {price:,.0f}원\n"
+        f"매수금액: {amount:,.0f}원\n"
+        f"MA5:  {ma5:,.0f}원\n"
+        f"MA20: {ma20:,.0f}원"
+    )
+    send_message(message)
+
+
+def send_dead_cross_alert(ticker: str, price: float, amount: float, ma5: float, ma20: float):
+    """데드크로스 매도 알림 전송"""
+    message = (
+        f"<b>매도 완료 - 데드크로스</b>\n"
+        f"코인: {ticker}\n"
+        f"현재가: {price:,.0f}원\n"
+        f"매도금액: {amount:,.0f}원\n"
+        f"MA5:  {ma5:,.0f}원\n"
+        f"MA20: {ma20:,.0f}원"
+    )
+    send_message(message)
+
+
+def send_buy_alert(ticker: str, price: float, amount: float):
+    """일반 매수 알림 전송"""
+    message = (
+        f"<b>매수 완료</b>\n"
         f"코인: {ticker}\n"
         f"가격: {price:,.0f}원\n"
         f"금액: {amount:,.0f}원"
@@ -50,18 +76,18 @@ def send_buy_alert(ticker: str, price: float, amount: float):
 
 
 def send_sell_alert(ticker: str, price: float, profit_rate: float):
-    """매도 알림 전송"""
-    emoji = "🔴" if profit_rate < 0 else "🟢"
+    """일반 매도 알림 전송"""
+    sign    = "+" if profit_rate >= 0 else ""
     message = (
-        f"{emoji} <b>매도 완료</b>\n"
+        f"<b>매도 완료</b>\n"
         f"코인: {ticker}\n"
         f"가격: {price:,.0f}원\n"
-        f"수익률: {profit_rate:.2f}%"
+        f"수익률: {sign}{profit_rate:.2f}%"
     )
     send_message(message)
 
 
 def send_error_alert(error_msg: str):
     """에러 알림 전송"""
-    message = f"⚠️ <b>오류 발생</b>\n{error_msg}"
+    message = f"<b>오류 발생</b>\n{error_msg}"
     send_message(message)

@@ -2,17 +2,15 @@
 업비트 자동매매 시스템 - 메인 실행 파일
 실행 방법: python main.py
 
-[변동성 돌파 전략 흐름]
-  오전 09:00 → 새 거래일 시작, 매수 기록 초기화
-  09:00~08:49 → 1분마다 매수 조건 체크 (조건 충족 시 매수)
-  오전 08:50 → 보유 코인 전량 매도
-  종료 후 반복
+[이동평균 크로스 전략 흐름]
+  5분마다 일봉 데이터 조회
+  골든크로스 감지 (MA5 > MA20 전환) → 매수
+  데드크로스 감지 (MA5 < MA20 전환) → 매도
+  1시간마다 현재 MA 상태 로그 출력
 """
-import os
 import sys
 import time
 import schedule
-from datetime import datetime
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -26,15 +24,27 @@ from src.api.upbit_client import (
     buy_market_order,
     sell_market_order,
 )
-from src.strategies.volatility_breakout import should_buy, calculate_target_price
-from src.notifications.telegram_bot import send_message, send_buy_alert, send_sell_alert, send_error_alert
+from src.strategies.ma_cross import MACrossStrategy
+from src.notifications.telegram_bot import (
+    send_message,
+    send_golden_cross_alert,
+    send_dead_cross_alert,
+    send_error_alert,
+)
 from src.database.supabase_client import save_trade
-from config.settings import TARGET_COINS, ORDER_AMOUNT, LIVE_TRADING
+from config.settings import (
+    STRATEGY_NAME,
+    SHORT_WINDOW,
+    LONG_WINDOW,
+    TICKER,
+    INVEST_RATIO,
+    LIVE_TRADING,
+)
 
 # ─────────────────────────────────────────
 # 로그 설정: 콘솔 + 파일 동시 저장
 # ─────────────────────────────────────────
-logger.remove()  # 기본 핸들러 제거
+logger.remove()
 logger.add(
     sys.stdout,
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
@@ -45,156 +55,182 @@ logger.add(
     "logs/trading_{time:YYYY-MM-DD}.log",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
     level="DEBUG",
-    rotation="00:00",   # 매일 자정에 새 파일
+    rotation="00:00",    # 매일 자정에 새 파일
     retention="30 days", # 30일치 보관
     encoding="utf-8",
 )
 
-# 당일 매수한 코인 기록 (중복 매수 방지)
-bought_today: set = set()
+# ─────────────────────────────────────────
+# 전략 인스턴스 생성
+# ─────────────────────────────────────────
+strategy = MACrossStrategy(short_window=SHORT_WINDOW, long_window=LONG_WINDOW)
 
 
-def do_sell_all():
+def do_buy(info: dict):
     """
-    보유 중인 모든 코인을 시장가로 매도합니다.
-    매일 오전 8:50에 실행됩니다.
+    골든크로스 신호 시 매수를 실행합니다.
+    보유 현금의 INVEST_RATIO 비율만큼 매수합니다.
     """
-    logger.info("=== 매도 시간 (08:50) - 보유 코인 전량 매도 시작 ===")
+    krw_balance = get_balance_krw()
+    invest_amount = krw_balance * INVEST_RATIO
 
-    for ticker in TARGET_COINS:
-        volume = get_balance_coin(ticker)
+    if invest_amount < 5000:
+        logger.warning(f"[{TICKER}] 원화 잔고 부족: {krw_balance:,.0f}원 (최소 5,000원 필요)")
+        return
 
-        if volume is None or volume < 0.00001:  # 보유량이 없으면 건너뜀
-            logger.info(f"[{ticker}] 보유 수량 없음, 매도 생략")
-            continue
+    current_price = get_current_price(TICKER)
+    ma5  = info.get("ma5", 0)
+    ma20 = info.get("ma20", 0)
 
-        current_price = get_current_price(ticker)
-
-        if LIVE_TRADING:
-            # 실제 매도 실행
-            result = sell_market_order(ticker, volume)
-            if result:
-                sell_amount = volume * current_price
-                save_trade(ticker, "sell", current_price, sell_amount, volume)
-                send_sell_alert(ticker, current_price, profit_rate=0)  # 수익률은 추후 계산
-                logger.info(f"[{ticker}] 매도 완료: {volume} → {current_price:,.0f}원")
-            else:
-                send_error_alert(f"{ticker} 매도 실패! 수동으로 확인하세요.")
+    if LIVE_TRADING:
+        # 실제 매수 실행
+        result = buy_market_order(TICKER, invest_amount)
+        if result:
+            save_trade(
+                strategy_name=STRATEGY_NAME,
+                ticker=TICKER,
+                side="buy",
+                price=current_price,
+                amount=invest_amount,
+                signal="golden_cross",
+                ma5=ma5,
+                ma20=ma20,
+            )
+            send_golden_cross_alert(TICKER, current_price, invest_amount, ma5, ma20)
+            logger.info(f"[{TICKER}] 매수 완료: {invest_amount:,.0f}원 @ {current_price:,.0f}원")
         else:
-            # 시뮬레이션 모드
-            sell_amount = volume * current_price
-            logger.info(f"[시뮬] [{ticker}] 매도 → 수량: {volume:.6f}, 금액: {sell_amount:,.0f}원")
-            send_message(f"[시뮬] {ticker} 매도\n수량: {volume:.6f}\n현재가: {current_price:,.0f}원")
+            send_error_alert(f"{TICKER} 매수 실패! 수동으로 확인하세요.")
+    else:
+        # 시뮬레이션 모드
+        quantity = invest_amount / current_price
+        logger.info(
+            f"[시뮬] [{TICKER}] 골든크로스 매수\n"
+            f"  금액: {invest_amount:,.0f}원 | 수량: {quantity:.6f} | 가격: {current_price:,.0f}원\n"
+            f"  MA{SHORT_WINDOW}: {ma5:,.0f} | MA{LONG_WINDOW}: {ma20:,.0f}"
+        )
+        send_message(
+            f"[시뮬] {TICKER} 골든크로스 매수\n"
+            f"금액: {invest_amount:,.0f}원\n"
+            f"가격: {current_price:,.0f}원\n"
+            f"MA{SHORT_WINDOW}: {ma5:,.0f}원\n"
+            f"MA{LONG_WINDOW}: {ma20:,.0f}원"
+        )
 
 
-def do_buy_check():
+def do_sell(info: dict):
     """
-    각 코인의 매수 조건을 확인하고, 조건 충족 시 매수합니다.
+    데드크로스 신호 시 보유 코인 전량 매도합니다.
     """
-    for ticker in TARGET_COINS:
+    volume = get_balance_coin(TICKER)
 
-        # 당일 이미 매수한 코인은 건너뜀
-        if ticker in bought_today:
-            logger.debug(f"[{ticker}] 오늘 이미 매수함, 건너뜀")
-            continue
+    if volume is None or volume < 0.00001:
+        logger.info(f"[{TICKER}] 보유 수량 없음, 매도 생략")
+        return
 
-        # 매수 조건 확인
-        if not should_buy(ticker):
-            continue
+    current_price = get_current_price(TICKER)
+    sell_amount   = volume * current_price
+    ma5  = info.get("ma5", 0)
+    ma20 = info.get("ma20", 0)
 
-        # 매수 가능한 원화 잔고 확인
-        krw_balance = get_balance_krw()
-        if krw_balance < ORDER_AMOUNT:
-            logger.warning(
-                f"[{ticker}] 원화 잔고 부족: "
-                f"보유 {krw_balance:,.0f}원 < 필요 {ORDER_AMOUNT:,.0f}원"
+    if LIVE_TRADING:
+        # 실제 매도 실행
+        result = sell_market_order(TICKER, volume)
+        if result:
+            save_trade(
+                strategy_name=STRATEGY_NAME,
+                ticker=TICKER,
+                side="sell",
+                price=current_price,
+                amount=sell_amount,
+                signal="dead_cross",
+                ma5=ma5,
+                ma20=ma20,
             )
-            continue
-
-        current_price = get_current_price(ticker)
-
-        if LIVE_TRADING:
-            # 실제 매수 실행
-            result = buy_market_order(ticker, ORDER_AMOUNT)
-            if result:
-                quantity = ORDER_AMOUNT / current_price
-                save_trade(ticker, "buy", current_price, ORDER_AMOUNT, quantity)
-                send_buy_alert(ticker, current_price, ORDER_AMOUNT)
-                bought_today.add(ticker)
-                logger.info(f"[{ticker}] 매수 완료: {ORDER_AMOUNT:,.0f}원")
-            else:
-                send_error_alert(f"{ticker} 매수 실패!")
+            send_dead_cross_alert(TICKER, current_price, sell_amount, ma5, ma20)
+            logger.info(f"[{TICKER}] 매도 완료: {volume:.6f} @ {current_price:,.0f}원")
         else:
-            # 시뮬레이션 모드
-            quantity = ORDER_AMOUNT / current_price
-            bought_today.add(ticker)
-            logger.info(
-                f"[시뮬] [{ticker}] 매수 → "
-                f"금액: {ORDER_AMOUNT:,.0f}원, 수량: {quantity:.6f}, 가격: {current_price:,.0f}원"
-            )
-            send_message(
-                f"[시뮬] {ticker} 매수 신호\n"
-                f"금액: {ORDER_AMOUNT:,.0f}원\n"
-                f"수량: {quantity:.6f}\n"
-                f"현재가: {current_price:,.0f}원"
-            )
+            send_error_alert(f"{TICKER} 매도 실패! 수동으로 확인하세요.")
+    else:
+        # 시뮬레이션 모드
+        logger.info(
+            f"[시뮬] [{TICKER}] 데드크로스 매도\n"
+            f"  수량: {volume:.6f} | 금액: {sell_amount:,.0f}원 | 가격: {current_price:,.0f}원\n"
+            f"  MA{SHORT_WINDOW}: {ma5:,.0f} | MA{LONG_WINDOW}: {ma20:,.0f}"
+        )
+        send_message(
+            f"[시뮬] {TICKER} 데드크로스 매도\n"
+            f"수량: {volume:.6f}\n"
+            f"금액: {sell_amount:,.0f}원\n"
+            f"가격: {current_price:,.0f}원\n"
+            f"MA{SHORT_WINDOW}: {ma5:,.0f}원\n"
+            f"MA{LONG_WINDOW}: {ma20:,.0f}원"
+        )
 
 
 def trading_job():
     """
-    1분마다 실행되는 메인 트레이딩 로직입니다.
-    현재 시각에 따라 매수/매도를 결정합니다.
+    5분마다 실행되는 메인 트레이딩 로직입니다.
+    MA 크로스 신호를 확인하고 매수/매도를 실행합니다.
     """
-    now = datetime.now()
-    hour, minute = now.hour, now.minute
+    try:
+        signal, info = strategy.check_signal(TICKER)
 
-    # 오전 8:50 ~ 8:59 → 전량 매도
-    if hour == 8 and 50 <= minute <= 59:
-        do_sell_all()
+        if signal == "buy":
+            do_buy(info)
+        elif signal == "sell":
+            do_sell(info)
+        # 신호 없음 → 대기 (debug 로그는 strategy 내부에서 출력)
 
-    # 오전 9:00 → 새 거래일 시작, 매수 기록 초기화
-    elif hour == 9 and minute == 0:
-        bought_today.clear()
-        logger.info("=== 새 거래일 시작 - 매수 기록 초기화 ===")
-        send_message("새 거래일 시작! 변동성 돌파 전략 모니터링 중...")
-
-    # 그 외 시간 → 매수 조건 체크
-    # (8:50~8:59는 매도 시간이므로 매수 안 함)
-    elif not (hour == 8 and minute >= 50):
-        do_buy_check()
+    except Exception as e:
+        logger.error(f"트레이딩 루프 오류: {e}")
+        send_error_alert(f"트레이딩 루프 오류:\n{e}")
 
 
 def print_status():
-    """현재 상태를 출력합니다 (1시간마다)."""
-    krw = get_balance_krw()
-    mode = "실거래" if LIVE_TRADING else "시뮬레이션"
-    logger.info(
-        f"[상태] 모드: {mode} | "
-        f"원화잔고: {krw:,.0f}원 | "
-        f"오늘 매수: {bought_today if bought_today else '없음'}"
-    )
+    """현재 MA 상태와 잔고를 출력합니다 (1시간마다)."""
+    krw    = get_balance_krw()
+    coin   = get_balance_coin(TICKER)
+    mode   = "실거래" if LIVE_TRADING else "시뮬레이션"
+    values = strategy.get_ma_values(TICKER)
+
+    if values:
+        ma5  = values["ma_short"]
+        ma20 = values["ma_long"]
+        trend = "매수 포지션" if ma5 > ma20 else "현금 대기"
+        logger.info(
+            f"[상태] 모드: {mode} | "
+            f"원화: {krw:,.0f}원 | "
+            f"코인: {coin:.6f if coin else 0} | "
+            f"MA{SHORT_WINDOW}: {ma5:,.0f} | "
+            f"MA{LONG_WINDOW}: {ma20:,.0f} | "
+            f"{trend}"
+        )
+    else:
+        logger.info(f"[상태] 모드: {mode} | 원화: {krw:,.0f}원")
 
 
 def main():
     mode_text = "실거래" if LIVE_TRADING else "시뮬레이션"
     logger.info(f"=== 업비트 자동매매 시스템 시작 ({mode_text} 모드) ===")
-    logger.info(f"대상 코인: {TARGET_COINS}")
-    logger.info(f"1회 매수금액: {ORDER_AMOUNT:,}원 | K값: {os.getenv('VOLATILITY_K', '0.5')}")
+    logger.info(f"전략: 이동평균 크로스 MA{SHORT_WINDOW}/MA{LONG_WINDOW}")
+    logger.info(f"대상 코인: {TICKER} | 투자 비율: {INVEST_RATIO * 100:.0f}%")
 
     send_message(
         f"자동매매 시작!\n"
         f"모드: {mode_text}\n"
-        f"코인: {', '.join(TARGET_COINS)}\n"
-        f"매수금액: {ORDER_AMOUNT:,}원"
+        f"전략: MA 크로스 {SHORT_WINDOW}/{LONG_WINDOW}\n"
+        f"코인: {TICKER}\n"
+        f"투자 비율: {INVEST_RATIO * 100:.0f}%"
     )
 
-    # 1분마다 매매 조건 체크
-    schedule.every(1).minutes.do(trading_job)
+    # 5분마다 신호 체크
+    schedule.every(5).minutes.do(trading_job)
     # 1시간마다 상태 출력
     schedule.every(1).hours.do(print_status)
 
-    # 시작하자마자 한 번 즉시 실행
+    # 시작 즉시 한 번 실행
     trading_job()
+    print_status()
 
     logger.info("스케줄러 시작. Ctrl+C 로 종료합니다.")
     while True:
