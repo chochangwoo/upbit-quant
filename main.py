@@ -219,8 +219,13 @@ def main():
         f"모드: {mode_text}\n"
         f"전략: MA 크로스 {SHORT_WINDOW}/{LONG_WINDOW}\n"
         f"코인: {TICKER}\n"
-        f"투자 비율: {INVEST_RATIO * 100:.0f}%"
+        f"투자 비율: {INVEST_RATIO * 100:.0f}%\n"
+        f"텔레그램 명령어: /help"
     )
+
+    # 텔레그램 명령어 핸들러 시작 (별도 스레드)
+    from notify.command_handler import start_command_handler
+    start_command_handler()
 
     # 5분마다 신호 체크
     schedule.every(5).minutes.do(trading_job)

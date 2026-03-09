@@ -438,6 +438,40 @@ CREATE TABLE backtest_results (
 
 ---
 
+## 기능 5: 코인 선별 전략 백테스팅 (구현 완료)
+
+### 전략 4종
+| 전략 | 클래스 | 핵심 지표 |
+|------|--------|-----------|
+| 모멘텀 스크리닝 | MomentumScreener | N일 수익률 상위 |
+| 거래량 급증 | VolumeScreener | 20일 평균 대비 거래량 비율 |
+| 평균회귀 | MeanReversionScreener | RSI(14) 과매도 |
+| 복합 스코어링 | CompositeScreener | 모멘텀50%+거래량30%+저변동성20% |
+
+### 실행 방법
+```bash
+python -m backtest.coin_screener.run_backtest
+python -m backtest.coin_screener.run_backtest --days 90 --top-n 3 --rebalance 7
+python -m backtest.coin_screener.run_backtest --strategies momentum,composite --save-csv
+```
+
+### 관련 파일
+```
+backtest/coin_screener/
+├── data_collector.py       # Upbit 전체 코인 일봉 데이터 수집 + 캐싱
+├── strategies/
+│   ├── base_screener.py    # 스크리너 추상 클래스
+│   ├── momentum_screener.py
+│   ├── volume_screener.py
+│   ├── mean_reversion_screener.py
+│   └── composite_screener.py
+├── backtest_engine.py      # 리밸런싱 방식 백테스팅 엔진
+├── report_generator.py     # 비교 리포트 (콘솔+차트+CSV+DB+텔레그램)
+└── run_backtest.py         # CLI 실행 진입점
+```
+
+---
+
 ## 개발 진행 현황
 - [x] 프로젝트 구조 생성
 - [x] requirements.txt 작성
@@ -448,6 +482,9 @@ CREATE TABLE backtest_results (
 - [x] 변동성 돌파 전략 구현
 - [x] 4가지 전략 백테스팅 완료 → MA 크로스 5/20 최우수
 - [x] Railway.app 배포 설정 파일 추가
+- [x] 코인 선별 전략 4종 구현 (모멘텀/거래량/평균회귀/복합)
+- [x] 코인 선별 전용 백테스팅 엔진 구현
+- [x] 비교 리포트 생성기 구현
 - [ ] ⭐ 이동평균 크로스 5/20 실거래 전략 구현 (최우선)
 - [ ] MA 크로스 전략 시뮬레이션 테스트
 - [ ] Railway.app 배포 및 24/7 운영
