@@ -15,12 +15,11 @@ notify/command_handler.py - 텔레그램 명령어 핸들러
     /report     - 일일 리포트 즉시 전송
 """
 import os
-import sys
 import asyncio
 import threading
+import traceback
 from loguru import logger
 
-# 텔레그램 봇 라이브러리 (python-telegram-bot v20+)
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
@@ -127,42 +126,6 @@ def _parse_backtest_args(context) -> dict:
     return config
 
 
-async def _run_screener_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                                  strategy_names: list):
-    """
-    코인 선별 전략 백테스팅을 실행하고 결과를 텔레그램으로 전송합니다.
-    데이터 수집에 시간이 걸리므로 별도 스레드에서 실행합니다.
-    """
-    config = _parse_backtest_args(context)
-    strategy_str = ", ".join(strategy_names)
-
-    await update.message.reply_text(
-        f"백테스팅 시작!\n"
-        f"전략: {strategy_str}\n"
-        f"기간: {config['days']}일 | 상위: {config['top_n']}개 | 리밸런싱: {config['rebalance']}일\n"
-        f"데이터 수집 중... (1~3분 소요)"
-    )
-
-    # 무거운 작업은 별도 스레드에서 실행
-    loop = asyncio.get_event_loop()
-    try:
-        result_text, chart_path = await loop.run_in_executor(
-            None, _execute_backtest, strategy_names, config
-        )
-        await update.message.reply_text(result_text, parse_mode="HTML")
-
-        # 차트 이미지 전송
-        if chart_path and os.path.exists(chart_path):
-            with open(chart_path, "rb") as photo:
-                await update.message.reply_photo(
-                    photo=photo,
-                    caption="코인 선별 전략 비교 차트"
-                )
-    except Exception as e:
-        logger.error(f"백테스팅 실행 오류: {e}")
-        await update.message.reply_text(f"백테스팅 실행 실패: {e}")
-
-
 def _execute_backtest(strategy_names: list, config: dict) -> tuple:
     """
     백테스팅 실제 실행 (동기 함수, run_in_executor에서 호출).
@@ -233,10 +196,10 @@ def _execute_backtest(strategy_names: list, config: dict) -> tuple:
 
     lines = [
         "<b>코인 선별 전략 백테스팅 결과</b>",
-        "═" * 24,
+        "=" * 24,
         f"기간: {days}일 | 코인: {top_n}개 | 리밸런싱: {rebalance}일",
         f"대상: {total_coins}개 코인",
-        "─" * 24,
+        "-" * 24,
     ]
 
     for rank, result in enumerate(sorted_results, 1):
@@ -251,6 +214,39 @@ def _execute_backtest(strategy_names: list, config: dict) -> tuple:
     lines.append(f"\n최우수: {best.strategy_name} ({best.total_return():+.2f}%)")
 
     return ("\n".join(lines), chart_path)
+
+
+async def _run_screener_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                  strategy_names: list):
+    """
+    코인 선별 전략 백테스팅을 실행하고 결과를 텔레그램으로 전송합니다.
+    """
+    config = _parse_backtest_args(context)
+    strategy_str = ", ".join(strategy_names)
+
+    await update.message.reply_text(
+        f"백테스팅 시작!\n"
+        f"전략: {strategy_str}\n"
+        f"기간: {config['days']}일 | 상위: {config['top_n']}개 | 리밸런싱: {config['rebalance']}일\n"
+        f"데이터 수집 중... (1~3분 소요)"
+    )
+
+    loop = asyncio.get_running_loop()
+    try:
+        result_text, chart_path = await loop.run_in_executor(
+            None, _execute_backtest, strategy_names, config
+        )
+        await update.message.reply_text(result_text, parse_mode="HTML")
+
+        if chart_path and os.path.exists(chart_path):
+            with open(chart_path, "rb") as photo:
+                await update.message.reply_photo(
+                    photo=photo,
+                    caption="코인 선별 전략 비교 차트"
+                )
+    except Exception as e:
+        logger.error(f"백테스팅 실행 오류: {e}\n{traceback.format_exc()}")
+        await update.message.reply_text(f"백테스팅 실행 실패: {e}")
 
 
 # ─────────────────────────────────────────
@@ -286,21 +282,52 @@ async def cmd_bt_composite(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────
+# 에러 핸들러
+# ─────────────────────────────────────────
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """텔레그램 봇의 모든 에러를 잡아서 로그에 기록합니다."""
+    logger.error(f"텔레그램 봇 에러: {context.error}\n{traceback.format_exc()}")
+
+
+# ─────────────────────────────────────────
 # 봇 시작 및 스레드 실행
 # ─────────────────────────────────────────
 
-def _run_bot_in_thread():
+async def _post_init(application: Application):
+    """봇 초기화 후 명령어 메뉴를 등록합니다."""
+    commands = [
+        BotCommand("help", "명령어 목록"),
+        BotCommand("status", "현재 봇 상태"),
+        BotCommand("backtest", "코인 선별 백테스팅 (전체)"),
+        BotCommand("bt_momentum", "모멘텀 전략 백테스팅"),
+        BotCommand("bt_volume", "거래량 급증 전략 백테스팅"),
+        BotCommand("bt_meanrev", "평균회귀 전략 백테스팅"),
+        BotCommand("bt_composite", "복합 스코어링 전략 백테스팅"),
+        BotCommand("report", "일일 리포트 즉시 전송"),
+    ]
+    await application.bot.set_my_commands(commands)
+    logger.info("텔레그램 봇 명령어 메뉴 등록 완료")
+
+
+def _run_bot_blocking():
     """
     별도 스레드에서 텔레그램 봇 폴링을 실행합니다.
-    새 이벤트 루프를 생성하여 async 봇을 돌립니다.
+    run_polling()은 메인 스레드에서만 signal 핸들러를 등록할 수 있으므로,
+    서브 스레드에서는 수동으로 이벤트 루프를 관리합니다.
     """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        logger.error("TELEGRAM_BOT_TOKEN이 설정되지 않았습니다.")
+        logger.error("TELEGRAM_BOT_TOKEN이 설정되지 않았습니다. 명령어 핸들러 시작 불가.")
         return
 
-    async def _start():
-        app = Application.builder().token(token).build()
+    async def _run():
+        app = (
+            Application.builder()
+            .token(token)
+            .post_init(_post_init)
+            .build()
+        )
 
         # 명령어 등록
         app.add_handler(CommandHandler("help", cmd_help))
@@ -313,34 +340,33 @@ def _run_bot_in_thread():
         app.add_handler(CommandHandler("bt_meanrev", cmd_bt_meanrev))
         app.add_handler(CommandHandler("bt_composite", cmd_bt_composite))
 
-        # 봇 메뉴에 명령어 목록 등록
-        commands = [
-            BotCommand("help", "명령어 목록"),
-            BotCommand("status", "현재 봇 상태"),
-            BotCommand("backtest", "코인 선별 백테스팅 (전체)"),
-            BotCommand("bt_momentum", "모멘텀 전략 백테스팅"),
-            BotCommand("bt_volume", "거래량 급증 전략 백테스팅"),
-            BotCommand("bt_meanrev", "평균회귀 전략 백테스팅"),
-            BotCommand("bt_composite", "복합 스코어링 전략 백테스팅"),
-            BotCommand("report", "일일 리포트 즉시 전송"),
-        ]
-        await app.bot.set_my_commands(commands)
+        # 에러 핸들러
+        app.add_error_handler(error_handler)
 
         logger.info("텔레그램 명령어 핸들러 시작 (폴링 모드)")
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
 
-        # 무한 대기 (stop 신호까지)
-        stop_event = asyncio.Event()
-        await stop_event.wait()
+        # 수동으로 초기화 → 폴링 시작 → 무한 대기
+        async with app:
+            await app.start()
+            await app.updater.start_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES,
+            )
+            logger.info("텔레그램 폴링 활성화 완료 - 명령어 수신 대기 중")
 
+            # 무한 대기 (데몬 스레드이므로 메인 종료 시 함께 종료)
+            stop_event = asyncio.Event()
+            await stop_event.wait()
+
+    # 서브 스레드에서 새 이벤트 루프 생성
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(_start())
+        loop.run_until_complete(_run())
     except Exception as e:
-        logger.error(f"텔레그램 봇 오류: {e}")
+        logger.error(f"텔레그램 봇 시작 실패: {e}\n{traceback.format_exc()}")
+    finally:
+        loop.close()
 
 
 def start_command_handler():
@@ -348,7 +374,11 @@ def start_command_handler():
     텔레그램 명령어 핸들러를 데몬 스레드로 시작합니다.
     main.py에서 호출하여 트레이딩 루프와 병렬 실행합니다.
     """
-    thread = threading.Thread(target=_run_bot_in_thread, daemon=True)
+    thread = threading.Thread(
+        target=_run_bot_blocking,
+        name="telegram-command-handler",
+        daemon=True,
+    )
     thread.start()
     logger.info("텔레그램 명령어 핸들러 스레드 시작됨")
     return thread

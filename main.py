@@ -224,8 +224,13 @@ def main():
     )
 
     # 텔레그램 명령어 핸들러 시작 (별도 스레드)
-    from notify.command_handler import start_command_handler
-    start_command_handler()
+    try:
+        from notify.command_handler import start_command_handler
+        start_command_handler()
+        time.sleep(2)  # 폴링 초기화 대기
+        logger.info("텔레그램 명령어 핸들러 활성화 완료")
+    except Exception as e:
+        logger.error(f"텔레그램 명령어 핸들러 시작 실패 (트레이딩은 계속): {e}")
 
     # 5분마다 신호 체크
     schedule.every(5).minutes.do(trading_job)
