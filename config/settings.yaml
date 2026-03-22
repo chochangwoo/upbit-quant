@@ -27,6 +27,23 @@ volatility_breakout:
   sell_time: "08:50"
   reset_time: "09:00"
 
+# ─── 포트폴리오 전략 설정 (백테스트 + 실거래 공용) ──
+portfolio_strategy:
+  # 전략 1: 크로스섹셔널 모멘텀
+  cross_sectional_momentum:
+    lookback_options: [7, 14, 21]
+    top_k_options: [3, 5]
+
+  # 전략 2: 리스크 패리티 (변동성 가중)
+  risk_parity:
+    vol_lookback_options: [20, 60]
+
+  # 전략 3: 통합 전략 (모멘텀 + 변동성 + 거래량)
+  combined:
+    mom_lookback_options: [7, 14]
+    vol_lookback: 20
+    top_k_options: [5, 7]
+
 # ─── 일일 리포트 설정 ─────────────────────────────
 report:
   # 리포트 전송 시간 (HH:MM 형식)
@@ -44,19 +61,42 @@ report:
 
 # ─── 백테스팅 설정 ────────────────────────────────
 backtest:
-  # 기본 테스트 기간
-  start_date: "2023-01-01"
-  end_date: "2024-12-31"
-  # 초기 투자 자본 (원)
-  initial_capital: 1000000
-  # 업비트 거래 수수료 (%)
+  # 데이터 수집 일수 (800일 = 약 2.2년)
+  data_days: 800
+  # 업비트 거래 수수료 (편도)
   fee_rate: 0.0005   # 0.05%
-  # 백테스팅 대상 코인 (비워두면 trading.target_coins 사용)
+
+  # Walk-Forward 롤링 윈도우 설정
+  walk_forward:
+    is_window: 90      # In-Sample 학습 윈도우 (일)
+    oos_window: 30     # Out-of-Sample 테스트 윈도우 (일)
+    slide_step: 30     # 슬라이딩 간격 (일)
+    rebal_freq: 7      # 리밸런싱 주기 (일)
+
+  # 통계적 검증 설정
+  validation:
+    monte_carlo_simulations: 1000
+    bootstrap_samples: 1000
+    confidence_level: 0.95
+
+  # 대상 코인 (13개 - 업비트 KRW 마켓 주요 코인)
   target_coins:
     - KRW-BTC
     - KRW-ETH
+    - KRW-SOL
+    - KRW-XRP
+    - KRW-DOGE
+    - KRW-ADA
+    - KRW-AVAX
+    - KRW-LINK
+    - KRW-DOT
+    - KRW-XLM
+    - KRW-NEAR
+    - KRW-UNI
+    - KRW-POL
+
   # 결과를 Supabase에 저장할지 여부
-  save_to_db: true
+  save_to_db: false
   # 완료 시 텔레그램 전송 여부
   notify_on_complete: true
 

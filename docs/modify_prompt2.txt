@@ -1,0 +1,387 @@
+# Freqtrade + 업비트 마이그레이션 가이드
+
+## 1. Freqtrade 현황 (2026.2 기준)
+
+### 업비트 지원 상태
+- Freqtrade는 CCXT 라이브러리 기반으로 100개 이상 거래소 지원
+- 업비트는 CCXT를 통해 **스팟(현물) 거래 가능**
+- Tier-1 공식 지원(Binance, Kraken, Coinbase)은 아니지만, 커뮤니티 테스트 수준으로 동작
+- 주의: 업비트는 **선물/마진 미지원** → Freqtrade에서도 스팟만 사용 가능
+
+### 핵심 기능
+- **백테스트**: 과거 데이터 다운로드 → 전략 시뮬레이션 → 성과 분석
+- **Hyperopt**: 파라미터 그리드 서치 + 베이지안 최적화로 자동 튜닝
+- **FreqAI**: 머신러닝 기반 적응형 전략 (자체 학습/예측)
+- **Dry-Run**: 실제 자금 없이 가상 거래 테스트
+- **텔레그램/WebUI**: 봇 상태 모니터링, 수동 개입
+
+---
+
+## 2. 설치 및 초기 설정
+
+### 2.1 설치
+```bash
+# 방법 1: 스크립트 설치 (권장)
+git clone https://github.com/freqtrade/freqtrade.git
+cd freqtrade
+./setup.sh  # Linux/Mac
+# ./setup.ps1  # Windows
+
+# 방법 2: pip
+pip install freqtrade
+
+# 방법 3: Docker
+docker compose up -d
+```
+
+요구사항: Python 3.11+, 시스템 시계 NTP 동기화 필수
+
+### 2.2 업비트 설정 (config.json)
+```json
+{
+    "exchange": {
+        "name": "upbit",
+        "key": "업비트_API_KEY",
+        "secret": "업비트_API_SECRET",
+        "ccxt_config": {},
+        "ccxt_async_config": {},
+        "pair_whitelist": [
+            "BTC/KRW", "ETH/KRW", "SOL/KRW", "XRP/KRW",
+            "DOGE/KRW", "ADA/KRW", "AVAX/KRW", "LINK/KRW",
+            "DOT/KRW", "XLM/KRW", "NEAR/KRW", "UNI/KRW", "POL/KRW"
+        ],
+        "pair_blacklist": []
+    },
+    "stake_currency": "KRW",
+    "stake_amount": 150000,
+    "max_open_trades": 5,
+    "tradable_balance_ratio": 0.95,
+    "dry_run": true,
+    "trading_mode": "spot",
+
+    "order_types": {
+        "entry": "limit",
+        "exit": "limit",
+        "stoploss": "limit",
+        "stoploss_on_exchange": false
+    },
+
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "exit_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+    }
+}
+```
+
+참고사항:
+- 업비트 API 키 발급 시 **허용 IP 등록 필수**
+- `stake_amount`: 15만 원 × 5 포지션 = 약 75만 원 활성 자금 (200만 원 중)
+- `dry_run: true`로 시작하여 충분히 검증 후 실매매 전환
+- 업비트는 `stoploss_on_exchange`를 지원하지 않을 수 있음 → false 권장
+
+### 2.3 과거 데이터 다운로드
+```bash
+# 일봉 데이터 (백테스트용)
+freqtrade download-data --exchange upbit \
+    --pairs BTC/KRW ETH/KRW SOL/KRW XRP/KRW DOGE/KRW \
+            ADA/KRW AVAX/KRW LINK/KRW DOT/KRW XLM/KRW \
+            NEAR/KRW UNI/KRW POL/KRW \
+    --timerange 20240101- \
+    --timeframe 1d 4h 1h
+
+# 데이터 확인
+freqtrade list-data --exchange upbit
+```
+
+---
+
+## 3. 전략 마이그레이션
+
+### 3.1 현재 전략 (5/20 MA 크로스) → Freqtrade 포맷
+
+```python
+# strategies/ma_cross_strategy.py
+from freqtrade.strategy import IStrategy, DecimalParameter, IntParameter
+import talib.abstract as ta
+from pandas import DataFrame
+
+
+class MACrossStrategy(IStrategy):
+    """
+    기존 5/20 이동평균 크로스 전략의 Freqtrade 버전
+    + ATR 필터 추가 (횡보장 whipsaw 방지)
+    """
+
+    # 최적화 가능한 파라미터
+    fast_period = IntParameter(3, 10, default=5, space="buy")
+    slow_period = IntParameter(15, 30, default=20, space="buy")
+    atr_period = IntParameter(10, 20, default=14, space="buy")
+    atr_threshold = DecimalParameter(0.5, 3.0, default=1.5, space="buy")
+
+    # 기본 설정
+    minimal_roi = {"0": 0.1, "60": 0.05, "120": 0.02}
+    stoploss = -0.07
+    timeframe = "1d"
+    can_short = False  # 업비트는 숏 불가
+
+    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe["ema_fast"] = ta.EMA(dataframe, timeperiod=self.fast_period.value)
+        dataframe["ema_slow"] = ta.EMA(dataframe, timeperiod=self.slow_period.value)
+        dataframe["atr"] = ta.ATR(dataframe, timeperiod=self.atr_period.value)
+        dataframe["atr_pct"] = dataframe["atr"] / dataframe["close"] * 100
+        return dataframe
+
+    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe.loc[
+            (
+                (dataframe["ema_fast"] > dataframe["ema_slow"])  # 골든 크로스
+                & (dataframe["ema_fast"].shift(1) <= dataframe["ema_slow"].shift(1))
+                & (dataframe["atr_pct"] > self.atr_threshold.value)  # ATR 필터
+                & (dataframe["volume"] > 0)
+            ),
+            "enter_long",
+        ] = 1
+        return dataframe
+
+    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe.loc[
+            (
+                (dataframe["ema_fast"] < dataframe["ema_slow"])  # 데드 크로스
+                & (dataframe["ema_fast"].shift(1) >= dataframe["ema_slow"].shift(1))
+            ),
+            "exit_long",
+        ] = 1
+        return dataframe
+```
+
+### 3.2 멀티에셋 전략 — 변동성 가중 모멘텀
+
+```python
+# strategies/vol_momentum_strategy.py
+from freqtrade.strategy import IStrategy, IntParameter, DecimalParameter
+import talib.abstract as ta
+from pandas import DataFrame
+import numpy as np
+
+
+class VolMomentumStrategy(IStrategy):
+    """
+    변동성 가중 + 모멘텀 결합 전략
+    - 모멘텀 상위 코인만 진입
+    - 변동성 낮은 코인에 더 큰 비중 (포지션 사이징)
+    - 거래량 급증 시 신호 강화
+    """
+
+    mom_period = IntParameter(7, 21, default=14, space="buy")
+    vol_period = IntParameter(14, 30, default=20, space="buy")
+    vol_change_threshold = DecimalParameter(0.1, 1.0, default=0.3, space="buy")
+
+    minimal_roi = {"0": 0.15, "72": 0.08, "168": 0.03}
+    stoploss = -0.08
+    timeframe = "1d"
+    can_short = False
+
+    # 동적 포지션 사이징 활성화
+    position_adjustment_enable = False
+
+    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        # 모멘텀: N일 수익률
+        dataframe["momentum"] = dataframe["close"].pct_change(self.mom_period.value)
+
+        # 변동성: N일 표준편차 (연환산)
+        dataframe["volatility"] = (
+            dataframe["close"].pct_change().rolling(self.vol_period.value).std()
+            * np.sqrt(365)
+        )
+
+        # 거래량 변화: 7일 평균 / 30일 평균
+        dataframe["vol_sma_7"] = dataframe["volume"].rolling(7).mean()
+        dataframe["vol_sma_30"] = dataframe["volume"].rolling(30).mean()
+        dataframe["vol_change"] = (
+            dataframe["vol_sma_7"] / dataframe["vol_sma_30"] - 1
+        )
+
+        # 추세 필터: 20일 EMA 기울기
+        dataframe["ema20"] = ta.EMA(dataframe, timeperiod=20)
+        dataframe["ema20_slope"] = dataframe["ema20"].pct_change(5)
+
+        return dataframe
+
+    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe.loc[
+            (
+                (dataframe["momentum"] > 0)                        # 양의 모멘텀
+                & (dataframe["ema20_slope"] > 0)                   # 상승 추세
+                & (dataframe["vol_change"] > self.vol_change_threshold.value)  # 거래량 증가
+                & (dataframe["volume"] > 0)
+            ),
+            "enter_long",
+        ] = 1
+        return dataframe
+
+    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe.loc[
+            (
+                (dataframe["momentum"] < -0.05)                    # 모멘텀 반전
+                | (dataframe["ema20_slope"] < -0.01)               # 추세 전환
+            ),
+            "exit_long",
+        ] = 1
+        return dataframe
+
+    def custom_stake_amount(self, current_time, current_rate, proposed_stake,
+                            min_stake, max_stake, leverage, entry_tag, side,
+                            **kwargs) -> float:
+        """
+        변동성 역가중 포지션 사이징
+        변동성이 낮은 코인에 더 큰 비중
+        """
+        dataframe, _ = self.dp.get_analyzed_dataframe(
+            kwargs.get("pair", ""), self.timeframe
+        )
+        if len(dataframe) > 0:
+            current_vol = dataframe.iloc[-1].get("volatility", 0.5)
+            if current_vol > 0:
+                # 역변동성 가중: 변동성이 낮으면 비중 UP
+                vol_factor = min(0.5 / current_vol, 2.0)  # 최대 2배
+                adjusted = proposed_stake * vol_factor
+                return max(min(adjusted, max_stake), min_stake)
+        return proposed_stake
+```
+
+---
+
+## 4. 백테스트 실행
+
+### 4.1 기본 백테스트
+```bash
+# MA 크로스 전략
+freqtrade backtesting \
+    --strategy MACrossStrategy \
+    --timerange 20240301-20260301 \
+    --timeframe 1d \
+    --fee 0.0005
+
+# 변동성 모멘텀 전략
+freqtrade backtesting \
+    --strategy VolMomentumStrategy \
+    --timerange 20240301-20260301 \
+    --timeframe 1d \
+    --fee 0.0005
+```
+
+업비트 수수료: 0.05% = 0.0005
+
+### 4.2 Hyperopt (파라미터 최적화)
+```bash
+freqtrade hyperopt \
+    --strategy MACrossStrategy \
+    --hyperopt-loss SharpeHyperOptLoss \
+    --spaces buy \
+    --timerange 20240301-20250901 \
+    --epochs 500 \
+    --fee 0.0005
+```
+
+사용 가능한 손실 함수:
+- `SharpeHyperOptLoss` — 샤프비율 최대화 (추천)
+- `SortinoHyperOptLoss` — 소르티노 최대화
+- `MaxDrawDownHyperOptLoss` — MDD 최소화
+- `CalmarHyperOptLoss` — 칼마비율 최대화
+
+### 4.3 Walk-Forward 검증
+```bash
+# 1단계: 학습 구간에서 최적화
+freqtrade hyperopt \
+    --strategy VolMomentumStrategy \
+    --hyperopt-loss SharpeHyperOptLoss \
+    --timerange 20240301-20250301 \
+    --epochs 300
+
+# 2단계: 검증 구간에서 테스트 (최적 파라미터 적용)
+freqtrade backtesting \
+    --strategy VolMomentumStrategy \
+    --timerange 20250301-20260301
+
+# 이 과정을 여러 구간으로 반복하여 과적합 검증
+```
+
+---
+
+## 5. 실매매 전환 로드맵
+
+### Phase 1: Dry-Run (2주)
+```json
+{ "dry_run": true }
+```
+- 실제 시장 데이터로 가상 거래
+- 슬리피지, API 응답 시간, 주문 체결 패턴 확인
+- 텔레그램 알림으로 실시간 모니터링
+
+### Phase 2: 소액 실매매 (2주)
+```json
+{
+    "dry_run": false,
+    "stake_amount": 50000,
+    "max_open_trades": 3
+}
+```
+- 5만 원 × 3 포지션 = 15만 원으로 시작
+- Dry-Run 결과와 실매매 결과 비교
+- 차이가 크면 원인 분석 (슬리피지, 체결 지연 등)
+
+### Phase 3: 본격 운용
+```json
+{
+    "dry_run": false,
+    "stake_amount": "unlimited",
+    "tradable_balance_ratio": 0.90,
+    "max_open_trades": 5
+}
+```
+- 전체 자본의 90% 활용
+- 주기적 성과 리뷰 및 파라미터 재최적화
+
+---
+
+## 6. 주요 커뮤니티 전략 참고
+
+### NostalgiaForInfinity (NFI)
+- Freqtrade 커뮤니티 최대 전략 (GitHub 2.9k stars)
+- 멀티 타임프레임 + 다중 시그널 조합
+- X7 버전이 최신, X6이 안정 프로덕션 권장
+- github.com/iterativv/NostalgiaForInfinity
+
+### Freqtrade Strategies 컬렉션
+- github.com/freqtrade/freqtrade-strategies
+- 커뮤니티가 공유한 다양한 전략 모음
+- 직접 포크하여 수정/최적화 가능
+
+---
+
+## 7. 참고 리소스
+
+### 공식 문서
+- Freqtrade 문서: freqtrade.io/en/stable/
+- Freqtrade Discord: 실시간 지원 및 전략 토론
+
+### 오픈소스 리포
+- awesome-systematic-trading: github.com/paperswithbacktest/awesome-systematic-trading
+- awesome-quant: github.com/wilsonfreitas/awesome-quant
+- hftbacktest: github.com/nkaz001/hftbacktest (고빈도 전략 참고)
+
+### 온체인 데이터
+- CryptoQuant: cryptoquant.com/ko (한국어, 온체인 시그널)
+- 텔레그램: t.me/cryptoquant_kr
+
+### 커뮤니티
+- r/algotrading (Reddit)
+- r/CryptoMarkets (Reddit)
+- QuantConnect Forum: quantconnect.com/forum
+- GPTers: gpters.org (한국어, AI 자동매매)

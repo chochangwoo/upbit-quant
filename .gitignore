@@ -82,5 +82,7 @@ coverage.xml
 # 📈 백테스팅 결과 / 임시 데이터
 # ============================
 backtest/results/
+crypto-quant-backtest/data/
+crypto-quant-backtest/results/
 *.csv
 *.xlsx

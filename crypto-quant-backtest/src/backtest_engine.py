@@ -1,24 +1,12 @@
 """
-backtest/engine.py - Walk-Forward 롤링 윈도우 백테스트 엔진
+롤링 윈도우(Walk-Forward) 백테스트 엔진
 
-기존의 단순 백테스트를 대체하는 고급 엔진입니다.
-
-핵심 구조:
-  - 학습(IS) 윈도우: 90일 - 전략이 지표를 계산하는 데 사용
-  - 테스트(OOS) 윈도우: 30일 - 실제 수익률을 측정하는 구간
-  - 슬라이딩 간격: 30일 - 매달 새 윈도우 생성
-  - 리밸런싱: OOS 내 7일마다 포트폴리오 비중 재조정
-  - 거래비용: 편도 0.05% (업비트 수수료)
-
-장점:
-  - 과거 데이터로 학습하고 미래 데이터로 검증 (과적합 방지)
-  - 여러 시장 환경(불장, 횡보, 하락장)을 순차적으로 경험
-  - 비중 드리프트와 거래비용을 현실적으로 반영
+- OOS 기간을 파라미터로 받아 15/30/45/60일 등 다양한 기간 테스트 가능
+- 거래비용: 편도 0.05%
 """
 
 import numpy as np
 import pandas as pd
-from loguru import logger
 
 from .metrics import calc_window_metrics, classify_regime
 
@@ -27,13 +15,8 @@ from .metrics import calc_window_metrics, classify_regime
 FEE_RATE = 0.0005
 
 
-def _calc_is_window(oos_window: int) -> int:
-    """OOS 기간에 맞는 IS(학습) 윈도우를 자동 결정합니다."""
-    return max(60, oos_window * 3)
-
-
 def _calc_rebal_freq(oos_window: int) -> int:
-    """OOS 기간에 맞는 리밸런싱 주기를 자동 결정합니다."""
+    """OOS 기간에 맞는 리밸런싱 주기 결정"""
     if oos_window <= 15:
         return 3
     elif oos_window <= 30:
@@ -44,22 +27,24 @@ def _calc_rebal_freq(oos_window: int) -> int:
         return 10
 
 
+def _calc_is_window(oos_window: int) -> int:
+    """OOS 기간에 맞는 IS(학습) 윈도우 결정"""
+    return max(60, oos_window * 3)
+
+
 def run_backtest(strategy, prices: pd.DataFrame, volumes: pd.DataFrame,
                  oos_window: int = 30) -> dict:
     """
-    단일 전략에 대해 Walk-Forward 롤링 윈도우 백테스트를 실행합니다.
+    단일 전략에 대해 롤링 윈도우 백테스트를 실행한다.
 
-    매개변수:
-        strategy  : get_weights() 메서드를 가진 전략 객체
-        prices    : 가격 데이터 (인덱스: 날짜, 컬럼: 코인)
-        volumes   : 거래량 데이터
-        oos_window: OOS(테스트) 기간 (일) — 15/30/45/60 등
+    Args:
+        strategy: get_weights 메서드를 가진 전략 객체
+        prices: 가격 데이터 (인덱스: 날짜, 컬럼: 코인)
+        volumes: 거래량 데이터
+        oos_window: OOS(테스트) 기간 (일)
 
-    반환값:
-        dict 형태:
-          - equity_curve   : 전체 에쿼티 커브 (1.0에서 시작)
-          - window_details : 윈도우별 상세 정보 DataFrame
-          - strategy_name  : 전략 이름
+    Returns:
+        dict: equity_curve, window_details, strategy_name
     """
     is_window = _calc_is_window(oos_window)
     rebal_freq = _calc_rebal_freq(oos_window)
@@ -74,14 +59,9 @@ def run_backtest(strategy, prices: pd.DataFrame, volumes: pd.DataFrame,
     window_details = []
     current_weights = pd.Series(dtype=float)
 
-    start_idx = is_window
-
-    # 에쿼티 시작값
     portfolio_value = 1.0
-
-    # 롤링 윈도우 반복
     window_num = 0
-    oos_start_idx = start_idx
+    oos_start_idx = is_window
 
     while oos_start_idx + oos_window <= n_dates:
         is_start_idx = oos_start_idx - is_window
@@ -93,27 +73,22 @@ def run_backtest(strategy, prices: pd.DataFrame, volumes: pd.DataFrame,
         oos_end = dates[oos_end_idx - 1]
 
         window_num += 1
-
         days_since_rebal = rebal_freq  # 첫날 바로 리밸런싱
 
         for i in range(oos_start_idx, oos_end_idx):
             today = dates[i]
 
-            # 리밸런싱 판단
             if days_since_rebal >= rebal_freq:
-                # 학습 윈도우 데이터 (IS 시작 ~ 현재)
                 lookback_data = prices.loc[dates[is_start_idx]:today]
                 new_weights = strategy.get_weights(prices, volumes, today, lookback_data)
 
                 if len(new_weights) > 0:
-                    # 턴오버 계산 및 거래비용 차감
                     if len(current_weights) > 0:
                         all_coins = new_weights.index.union(current_weights.index)
                         old_w = current_weights.reindex(all_coins, fill_value=0.0)
                         new_w = new_weights.reindex(all_coins, fill_value=0.0)
                         turnover = (new_w - old_w).abs().sum()
-                        fee = turnover * FEE_RATE
-                        portfolio_value *= (1 - fee)
+                        portfolio_value *= (1 - turnover * FEE_RATE)
 
                     current_weights = new_weights
                     days_since_rebal = 0
@@ -122,7 +97,6 @@ def run_backtest(strategy, prices: pd.DataFrame, volumes: pd.DataFrame,
             else:
                 days_since_rebal += 1
 
-            # 일별 수익률 반영
             if i > 0 and len(current_weights) > 0:
                 prev_date = dates[i - 1]
                 daily_return = 0.0
@@ -135,18 +109,18 @@ def run_backtest(strategy, prices: pd.DataFrame, volumes: pd.DataFrame,
 
                 portfolio_value *= (1 + daily_return)
 
-                # 비중 드리프트 반영 (가격 변동에 따라 비중 자연 변동)
-                if days_since_rebal > 0 and len(current_weights) > 0:
+                # 비중 드리프트
+                if days_since_rebal > 0:
                     drifted = {}
                     total = 0
                     for coin, w in current_weights.items():
                         if coin in prices.columns:
-                            p_today_val = prices.loc[today, coin]
-                            p_prev_val = prices.loc[prev_date, coin]
-                            if pd.notna(p_today_val) and pd.notna(p_prev_val) and p_prev_val > 0:
-                                new_w = w * (p_today_val / p_prev_val)
-                                drifted[coin] = new_w
-                                total += new_w
+                            pt = prices.loc[today, coin]
+                            pp = prices.loc[prev_date, coin]
+                            if pd.notna(pt) and pd.notna(pp) and pp > 0:
+                                nw = w * (pt / pp)
+                                drifted[coin] = nw
+                                total += nw
                     if total > 0:
                         current_weights = pd.Series({c: v / total for c, v in drifted.items()})
 
@@ -162,7 +136,6 @@ def run_backtest(strategy, prices: pd.DataFrame, volumes: pd.DataFrame,
             )
             metrics = calc_window_metrics(oos_equity)
 
-            # 보유 종목 상위 3개
             top_holdings = ""
             if len(current_weights) > 0:
                 top3 = current_weights.nlargest(3)
@@ -186,7 +159,6 @@ def run_backtest(strategy, prices: pd.DataFrame, volumes: pd.DataFrame,
 
         oos_start_idx += slide_step
 
-    # 에쿼티 커브 정리
     equity = equity.dropna()
 
     return {
@@ -197,7 +169,7 @@ def run_backtest(strategy, prices: pd.DataFrame, volumes: pd.DataFrame,
 
 
 def run_benchmark_btc(prices: pd.DataFrame, start_date: pd.Timestamp) -> pd.Series:
-    """BTC 바이앤홀드 벤치마크: BTC를 사서 계속 들고 있는 경우"""
+    """BTC 바이앤홀드 벤치마크"""
     if "KRW-BTC" not in prices.columns:
         return pd.Series(dtype=float)
     btc = prices["KRW-BTC"].loc[start_date:].dropna()
@@ -207,10 +179,9 @@ def run_benchmark_btc(prices: pd.DataFrame, start_date: pd.Timestamp) -> pd.Seri
 
 
 def run_benchmark_equal(prices: pd.DataFrame, start_date: pd.Timestamp) -> pd.Series:
-    """동일비중 바이앤홀드 벤치마크: 전체 코인을 균등하게 사서 보유"""
+    """동일비중 바이앤홀드 벤치마크"""
     p = prices.loc[start_date:].dropna(axis=1, how="any")
     if p.empty:
         return pd.Series(dtype=float)
     normalized = p.div(p.iloc[0])
-    equal_weight = normalized.mean(axis=1)
-    return equal_weight
+    return normalized.mean(axis=1)
