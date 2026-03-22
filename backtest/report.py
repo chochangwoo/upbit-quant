@@ -1,12 +1,14 @@
 """
 backtest/report.py - 백테스트 결과 시각화 및 리포트
 
-5종류의 차트를 생성합니다:
+7종류의 차트를 생성합니다:
   1. 누적 수익률 곡선 (전략 + 벤치마크)
   2. 윈도우별 수익률 바 차트 (레짐별 색상)
   3. 성과 지표 히트맵
   4. 레짐별 성과 비교
   5. 몬테카를로 분포 + 부트스트랩 신뢰구간 차트
+  6. OOS 기간별 전략 비교 차트
+  7. 전략 유형별 x OOS 기간별 성과 히트맵
 
 추가로 텔레그램 전송, Supabase DB 저장 기능을 제공합니다.
 """
@@ -38,7 +40,7 @@ def _ensure_dir():
 # 1. 누적 수익률 곡선
 # ─────────────────────────────────────────
 
-def plot_equity_curves(results: list, benchmarks: dict):
+def plot_equity_curves(results: list, benchmarks: dict, suffix: str = ""):
     """
     전략별 누적 수익률 곡선을 그립니다.
 
@@ -58,7 +60,10 @@ def plot_equity_curves(results: list, benchmarks: dict):
         eq = r["equity_curve"]
         ax.plot(eq.index, (eq - 1) * 100, linewidth=1.2, label=r["strategy_name"])
 
-    ax.set_title("전략별 누적 수익률 비교", fontsize=16, fontweight="bold")
+    title = "전략별 누적 수익률 비교"
+    if suffix:
+        title += f" (OOS {suffix}일)"
+    ax.set_title(title, fontsize=16, fontweight="bold")
     ax.set_xlabel("날짜")
     ax.set_ylabel("수익률 (%)")
     ax.legend(loc="upper left", fontsize=8, ncol=2)
@@ -66,7 +71,8 @@ def plot_equity_curves(results: list, benchmarks: dict):
     ax.axhline(y=0, color="black", linewidth=0.5)
 
     plt.tight_layout()
-    fig.savefig(os.path.join(RESULTS_DIR, "equity_curves.png"), dpi=150)
+    fname = f"equity_curves_{suffix}.png" if suffix else "equity_curves.png"
+    fig.savefig(os.path.join(RESULTS_DIR, fname), dpi=150)
     logger.info("  -> 누적 수익률 차트 저장 완료")
     plt.close(fig)
 
@@ -121,7 +127,7 @@ def plot_window_returns(window_details: pd.DataFrame, strategy_name: str):
 # 3. 성과 지표 히트맵
 # ─────────────────────────────────────────
 
-def plot_metrics_heatmap(summary_df: pd.DataFrame):
+def plot_metrics_heatmap(summary_df: pd.DataFrame, suffix: str = ""):
     """전략 간 성과 지표를 히트맵으로 비교합니다."""
     if summary_df.empty:
         return
@@ -164,11 +170,15 @@ def plot_metrics_heatmap(summary_df: pd.DataFrame):
             ax.text(j, i, text, ha="center", va="center", fontsize=7,
                     color="black" if 0.3 < norm_data.iloc[i, j] < 0.7 else "white")
 
-    ax.set_title("전략별 성과 지표 비교 (히트맵)", fontsize=14, fontweight="bold")
+    title = "전략별 성과 지표 비교"
+    if suffix:
+        title += f" (OOS {suffix}일)"
+    ax.set_title(title, fontsize=14, fontweight="bold")
     plt.colorbar(im, ax=ax, shrink=0.8, label="상대 성과 (높을수록 좋음)")
     plt.tight_layout()
 
-    fig.savefig(os.path.join(RESULTS_DIR, "metrics_heatmap.png"), dpi=150)
+    fname = f"metrics_heatmap_{suffix}.png" if suffix else "metrics_heatmap.png"
+    fig.savefig(os.path.join(RESULTS_DIR, fname), dpi=150)
     logger.info("  -> 성과 히트맵 저장 완료")
     plt.close(fig)
 
@@ -354,6 +364,124 @@ def send_summary_to_telegram(summary_text: str, chart_paths: list = None):
         logger.info("텔레그램 요약 전송 완료")
     except Exception as e:
         logger.warning(f"텔레그램 전송 실패: {e}")
+
+
+# ─────────────────────────────────────────
+# Supabase DB 저장
+# ─────────────────────────────────────────
+
+def plot_period_comparison(period_summaries: dict):
+    """
+    OOS 기간별 최적 전략 비교 차트를 생성합니다.
+    4개 패널: 샤프비율, 누적수익률, MDD, 칼마비율
+
+    매개변수:
+        period_summaries: {oos_days: summary_df, ...}
+    """
+    _ensure_dir()
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+    metrics_to_plot = [
+        ("샤프비율", "샤프 비율 (높을수록 좋음)"),
+        ("누적수익률", "누적 수익률"),
+        ("MDD", "최대 낙폭 (MDD)"),
+        ("칼마비율", "칼마 비율 (수익/리스크)"),
+    ]
+
+    for ax, (metric, title) in zip(axes.flatten(), metrics_to_plot):
+        periods = sorted(period_summaries.keys())
+        x = np.arange(len(periods))
+
+        # 각 기간에서 TOP 5 전략 추출
+        all_strategies = set()
+        for p in periods:
+            df = period_summaries[p]
+            strats = df[~df["전략"].str.contains("B&H")].nlargest(5, "샤프비율")["전략"].values
+            all_strategies.update(strats)
+
+        colors = plt.cm.tab10(np.linspace(0, 1, min(10, len(all_strategies))))
+        width = 0.8 / max(len(all_strategies), 1)
+
+        for idx, strat in enumerate(sorted(all_strategies)):
+            vals = []
+            for p in periods:
+                df = period_summaries[p]
+                row = df[df["전략"] == strat]
+                vals.append(row[metric].values[0] if len(row) > 0 else 0)
+            ax.bar(x + idx * width, vals, width, label=strat[:15],
+                   color=colors[idx % len(colors)], alpha=0.8)
+
+        ax.set_xticks(x + width * len(all_strategies) / 2)
+        ax.set_xticklabels([f"{p}일" for p in periods])
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.legend(fontsize=5, ncol=2)
+        ax.grid(True, axis="y", alpha=0.3)
+        if metric != "MDD":
+            ax.axhline(y=0, color="black", linewidth=0.5)
+
+    plt.suptitle("OOS 기간별 전략 성과 비교", fontsize=16, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(os.path.join(RESULTS_DIR, "period_comparison.png"), dpi=150)
+    logger.info("  -> OOS 기간별 비교 차트 저장 완료")
+    plt.close(fig)
+
+
+def plot_strategy_type_summary(type_summaries: dict):
+    """
+    전략 유형별 x OOS 기간별 평균 성과 히트맵을 생성합니다.
+
+    매개변수:
+        type_summaries: {(strategy_type, period): {"avg_sharpe", "avg_return", "avg_mdd"}}
+    """
+    rows = []
+    for (stype, period), metrics in type_summaries.items():
+        rows.append({
+            "전략유형": stype,
+            "OOS기간": f"{period}일",
+            "평균샤프": metrics["avg_sharpe"],
+            "평균수익률": metrics["avg_return"],
+            "평균MDD": metrics["avg_mdd"],
+        })
+
+    if not rows:
+        return
+
+    _ensure_dir()
+    df = pd.DataFrame(rows)
+
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+
+    for ax, (col, title) in zip(axes, [
+        ("평균샤프", "평균 샤프 비율"),
+        ("평균수익률", "평균 누적 수익률"),
+        ("평균MDD", "평균 MDD"),
+    ]):
+        pivot = df.pivot(index="전략유형", columns="OOS기간", values=col)
+        period_order = [f"{p}일" for p in [15, 30, 45, 60] if f"{p}일" in pivot.columns]
+        pivot = pivot[period_order]
+
+        cmap = "RdYlGn" if col != "평균MDD" else "RdYlGn_r"
+        im = ax.imshow(pivot.values, cmap=cmap, aspect="auto")
+
+        ax.set_xticks(range(len(pivot.columns)))
+        ax.set_xticklabels(pivot.columns)
+        ax.set_yticks(range(len(pivot.index)))
+        ax.set_yticklabels(pivot.index, fontsize=8)
+        ax.set_title(title, fontsize=12, fontweight="bold")
+
+        for i in range(len(pivot.index)):
+            for j in range(len(pivot.columns)):
+                val = pivot.iloc[i, j]
+                text = f"{val:.2%}" if abs(val) < 10 else f"{val:.2f}"
+                ax.text(j, i, text, ha="center", va="center", fontsize=8, color="black")
+
+        plt.colorbar(im, ax=ax, shrink=0.8)
+
+    plt.suptitle("전략 유형별 x OOS 기간별 성과 요약", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(os.path.join(RESULTS_DIR, "strategy_type_summary.png"), dpi=150)
+    logger.info("  -> 전략 유형별 요약 차트 저장 완료")
+    plt.close(fig)
 
 
 # ─────────────────────────────────────────

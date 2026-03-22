@@ -9,26 +9,8 @@ trading:
   # 실거래 여부 (true = 실거래, false = 시뮬레이션)
   live_trading: false
 
-# ─── 현재 메인 전략: 이동평균 크로스 5/20 ──────────
-strategy:
-  name: "ma_cross"
-  # 단기 이동평균 기간 (일)
-  short_window: 5
-  # 장기 이동평균 기간 (일)
-  long_window: 20
-  # 거래 코인
-  ticker: "KRW-BTC"
-  # 보유 현금의 투자 비율 (0.95 = 95%)
-  invest_ratio: 0.95
-
-# ─── 보조 전략: 변동성 돌파 (참고용) ───────────────
-volatility_breakout:
-  k: 0.5
-  sell_time: "08:50"
-  reset_time: "09:00"
-
 # ─── 포트폴리오 전략 설정 (백테스트 + 실거래 공용) ──
-portfolio_strategy:
+strategy:
   # 전략 1: 크로스섹셔널 모멘텀
   cross_sectional_momentum:
     lookback_options: [7, 14, 21]
@@ -44,19 +26,50 @@ portfolio_strategy:
     vol_lookback: 20
     top_k_options: [5, 7]
 
+  # 전략 4: RSI 역추세
+  rsi_mean_reversion:
+    rsi_period: 14
+    threshold_options: [30, 40]
+    top_k_options: [3, 5]
+
+  # 전략 5: 듀얼 모멘텀 (단기 + 장기)
+  dual_momentum:
+    short_lookback_options: [7, 14]
+    long_lookback: 60
+    top_k_options: [3, 5]
+
+  # 전략 6: 거래량 브레이크아웃
+  volume_breakout:
+    price_lookback: 5
+    vol_ratio_options: [1.3, 1.5, 2.0]
+    top_k_options: [3, 5]
+
+  # 전략 7: MA 크로스 로테이션
+  ma_cross_rotation:
+    ma_pairs: [[5, 20], [10, 30], [3, 10]]
+    top_k_options: [3, 5]
+
+  # 전략 8: 모멘텀 반전
+  momentum_reversal:
+    mid_lookback_options: [20, 30]
+    short_lookback: 5
+    top_k_options: [3, 5]
+
+  # 전략 9: 적응형 모멘텀
+  adaptive_momentum:
+    short_lb: 5
+    long_lb: 30
+    top_k_options: [3, 5]
+
 # ─── 일일 리포트 설정 ─────────────────────────────
 report:
-  # 리포트 전송 시간 (HH:MM 형식)
   send_time: "08:00"
-  # 리포트에 포함할 지표 목록
   metrics:
-    - cumulative_return   # 누적 수익률
-    - mdd                 # 최대 낙폭
-    - win_rate            # 승률
-    - sharpe_ratio        # 샤프 지수
-  # 어제 매매 내역 포함 여부
+    - cumulative_return
+    - mdd
+    - win_rate
+    - sharpe_ratio
   include_yesterday_trades: true
-  # 시장 상황 코멘트 포함 여부
   include_market_comment: true
 
 # ─── 백테스팅 설정 ────────────────────────────────
@@ -64,14 +77,10 @@ backtest:
   # 데이터 수집 일수 (800일 = 약 2.2년)
   data_days: 800
   # 업비트 거래 수수료 (편도)
-  fee_rate: 0.0005   # 0.05%
+  fee_rate: 0.0005
 
-  # Walk-Forward 롤링 윈도우 설정
-  walk_forward:
-    is_window: 90      # In-Sample 학습 윈도우 (일)
-    oos_window: 30     # Out-of-Sample 테스트 윈도우 (일)
-    slide_step: 30     # 슬라이딩 간격 (일)
-    rebal_freq: 7      # 리밸런싱 주기 (일)
+  # 멀티기간 OOS 테스트
+  oos_periods: [15, 30, 45, 60]
 
   # 통계적 검증 설정
   validation:
@@ -79,7 +88,7 @@ backtest:
     bootstrap_samples: 1000
     confidence_level: 0.95
 
-  # 대상 코인 (13개 - 업비트 KRW 마켓 주요 코인)
+  # 대상 코인 (13개)
   target_coins:
     - KRW-BTC
     - KRW-ETH
@@ -95,38 +104,5 @@ backtest:
     - KRW-UNI
     - KRW-POL
 
-  # 결과를 Supabase에 저장할지 여부
   save_to_db: false
-  # 완료 시 텔레그램 전송 여부
-  notify_on_complete: true
-
-# ─── 코인 선별 전략 백테스팅 설정 ───────────────
-coin_screener:
-  # 백테스트 기간 (일)
-  days: 60
-  # 선별 코인 수
-  top_n: 5
-  # 리밸런싱 주기 (일)
-  rebalance_days: 3
-  # 초기 자본금 (원)
-  initial_capital: 1000000
-  # 편도 수수료율
-  fee_rate: 0.0005
-  # 슬리피지
-  slippage: 0.001
-  # 최소 일평균 거래대금 (원, 미만 코인 제외)
-  min_volume_krw: 100000000
-  # 전략별 파라미터
-  momentum:
-    lookback_days: 7
-  volume:
-    vol_avg_days: 20
-  mean_reversion:
-    rsi_period: 14
-  composite:
-    momentum_days: 7
-    vol_avg_days: 20
-    volatility_days: 20
-    w_momentum: 0.5
-    w_volume: 0.3
-    w_volatility: 0.2
+  notify_on_complete: false
