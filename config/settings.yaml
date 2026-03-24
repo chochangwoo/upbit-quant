@@ -10,12 +10,33 @@ trading:
   live_trading: false
 
 # ─── 실거래 전략 설정 ────────────────────────────
+# name 옵션:
+#   "ma_cross"              → 기존 MA 크로스 5/20 (단일 코인)
+#   "portfolio_momentum"    → 모멘텀 포트폴리오 (멀티 코인)
+#   "portfolio_rsi"         → RSI 역추세 포트폴리오
+#   "portfolio_combined"    → 복합 포트폴리오 (모멘텀+저변동성)
+#   "portfolio_ml"          → ML(LightGBM) 포트폴리오
 strategy:
   name: "ma_cross"
   short_window: 5
   long_window: 20
   ticker: "KRW-BTC"
   invest_ratio: 0.95
+
+# ─── 포트폴리오 전략 설정 (name이 portfolio_* 일 때 사용) ──
+portfolio:
+  top_k: 5                  # 동시 보유 최대 코인 수
+  rebalance_days: 3         # 리밸런싱 주기 (일)
+  lookback: 14              # 모멘텀 계산 기간 (일)
+
+  # 리스크 관리
+  risk:
+    max_invest_ratio: 0.90  # 최대 투자 비율 (전체 자산의 90%)
+    max_coin_weight: 0.30   # 코인당 최대 비중 (30%)
+    mdd_limit: -0.15        # MDD 한도 (-15% 초과 시 전량 매도)
+    stop_loss_per_coin: -0.10  # 코인별 손절선 (-10%)
+    min_order_krw: 5000     # 최소 주문 금액 (원)
+    cool_down_hours: 1      # 손절 후 재진입 대기 시간
   # 전략 1: 크로스섹셔널 모멘텀
   cross_sectional_momentum:
     lookback_options: [7, 14, 21]

@@ -2,11 +2,15 @@
 업비트 자동매매 시스템 - 메인 실행 파일
 실행 방법: python main.py
 
-[이동평균 크로스 전략 흐름]
-  5분마다 일봉 데이터 조회
-  골든크로스 감지 (MA5 > MA20 전환) → 매수
-  데드크로스 감지 (MA5 < MA20 전환) → 매도
-  1시간마다 현재 MA 상태 로그 출력
+[전략 모드]
+  1. ma_cross    : 이동평균 크로스 5/20 (단일 코인)
+  2. portfolio   : 멀티코인 포트폴리오 (백테스트 기반)
+     - momentum  : 모멘텀 전략
+     - rsi       : RSI 역추세 전략
+     - combined  : 복합 전략 (모멘텀 + 저변동성)
+     - ml        : ML(LightGBM) 전략
+
+  전략 선택: config/settings.yaml → strategy.name
 """
 import signal
 import sys
@@ -25,7 +29,6 @@ from src.api.upbit_client import (
     buy_market_order,
     sell_market_order,
 )
-from src.strategies.ma_cross import MACrossStrategy
 from src.notifications.telegram_bot import (
     send_message,
     send_golden_cross_alert,
@@ -53,17 +56,58 @@ logger.add(
     colorize=True,
 )
 
-# ─────────────────────────────────────────
-# 전략 인스턴스 생성
-# ─────────────────────────────────────────
-strategy = MACrossStrategy(short_window=SHORT_WINDOW, long_window=LONG_WINDOW)
 
+# ─────────────────────────────────────────
+# 전략 초기화
+# ─────────────────────────────────────────
+
+# 포트폴리오 전략 관련 변수
+portfolio_executor = None
+
+if STRATEGY_NAME == "ma_cross":
+    from src.strategies.ma_cross import MACrossStrategy
+    strategy = MACrossStrategy(short_window=SHORT_WINDOW, long_window=LONG_WINDOW)
+
+elif STRATEGY_NAME.startswith("portfolio_"):
+    from src.strategies.portfolio_strategy import PortfolioStrategy
+    from src.strategies.risk_manager import RiskManager
+    from src.trading.portfolio_executor import PortfolioExecutor
+
+    strategy_type = STRATEGY_NAME.replace("portfolio_", "")
+
+    import yaml
+    _yaml_path = "config/settings.yaml"
+    with open(_yaml_path, "r", encoding="utf-8") as f:
+        _yaml_cfg = yaml.safe_load(f)
+
+    # 포트폴리오 설정 로드
+    portfolio_cfg = _yaml_cfg.get("portfolio", {})
+    risk_cfg = portfolio_cfg.get("risk", {})
+
+    strategy = PortfolioStrategy(
+        strategy_type=strategy_type,
+        top_k=portfolio_cfg.get("top_k", 5),
+        rebalance_days=portfolio_cfg.get("rebalance_days", 3),
+        lookback=portfolio_cfg.get("lookback", 14),
+        risk_config=risk_cfg,
+    )
+
+    risk_manager = RiskManager(config=risk_cfg)
+    portfolio_executor = PortfolioExecutor(strategy, risk_manager, LIVE_TRADING)
+
+else:
+    # 기본: MA Cross
+    from src.strategies.ma_cross import MACrossStrategy
+    strategy = MACrossStrategy(short_window=SHORT_WINDOW, long_window=LONG_WINDOW)
+    STRATEGY_NAME = "ma_cross"
+
+
+# ─────────────────────────────────────────
+# MA Cross 매매 함수 (기존)
+# ─────────────────────────────────────────
 
 def do_buy(info: dict):
-    """
-    골든크로스 신호 시 매수를 실행합니다.
-    보유 현금의 INVEST_RATIO 비율만큼 매수합니다.
-    """
+    """골든크로스 신호 시 매수를 실행합니다."""
     krw_balance = get_balance_krw()
     invest_amount = krw_balance * INVEST_RATIO
 
@@ -79,7 +123,6 @@ def do_buy(info: dict):
     ma20 = info.get("ma20", 0)
 
     if LIVE_TRADING:
-        # 실제 매수 실행
         result = buy_market_order(TICKER, invest_amount)
         if result:
             save_trade(
@@ -97,7 +140,6 @@ def do_buy(info: dict):
         else:
             send_error_alert(f"{TICKER} 매수 실패! 수동으로 확인하세요.")
     else:
-        # 시뮬레이션 모드
         quantity = invest_amount / current_price
         logger.info(
             f"[시뮬] [{TICKER}] 골든크로스 매수\n"
@@ -114,9 +156,7 @@ def do_buy(info: dict):
 
 
 def do_sell(info: dict):
-    """
-    데드크로스 신호 시 보유 코인 전량 매도합니다.
-    """
+    """데드크로스 신호 시 보유 코인 전량 매도합니다."""
     volume = get_balance_coin(TICKER)
 
     if volume is None or volume < 0.00001:
@@ -132,7 +172,6 @@ def do_sell(info: dict):
     ma20 = info.get("ma20", 0)
 
     if LIVE_TRADING:
-        # 실제 매도 실행
         result = sell_market_order(TICKER, volume)
         if result:
             save_trade(
@@ -150,7 +189,6 @@ def do_sell(info: dict):
         else:
             send_error_alert(f"{TICKER} 매도 실패! 수동으로 확인하세요.")
     else:
-        # 시뮬레이션 모드
         logger.info(
             f"[시뮬] [{TICKER}] 데드크로스 매도\n"
             f"  수량: {volume:.6f} | 금액: {sell_amount:,.0f}원 | 가격: {current_price:,.0f}원\n"
@@ -166,19 +204,25 @@ def do_sell(info: dict):
         )
 
 
-def trading_job():
-    """
-    5분마다 실행되는 메인 트레이딩 로직입니다.
-    MA 크로스 신호를 확인하고 매수/매도를 실행합니다.
-    """
-    try:
-        signal, info = strategy.check_signal(TICKER)
+# ─────────────────────────────────────────
+# 트레이딩 루프
+# ─────────────────────────────────────────
 
-        if signal == "buy":
-            do_buy(info)
-        elif signal == "sell":
-            do_sell(info)
-        # 신호 없음 → 대기 (debug 로그는 strategy 내부에서 출력)
+def trading_job():
+    """5분마다 실행되는 메인 트레이딩 로직입니다."""
+    try:
+        if portfolio_executor:
+            # 포트폴리오 모드: 리밸런싱 실행
+            result = portfolio_executor.run_rebalance()
+            if result["action"] != "skip":
+                logger.info(f"[포트폴리오] 실행: {result['action']}")
+        else:
+            # MA Cross 모드: 기존 로직
+            sig, info = strategy.check_signal(TICKER)
+            if sig == "buy":
+                do_buy(info)
+            elif sig == "sell":
+                do_sell(info)
 
     except Exception as e:
         logger.exception(f"트레이딩 루프 오류: {e}")
@@ -186,40 +230,50 @@ def trading_job():
 
 
 def print_status():
-    """현재 MA 상태와 잔고를 출력합니다 (1시간마다)."""
-    krw    = get_balance_krw()
-    coin   = get_balance_coin(TICKER)
-    mode   = "실거래" if LIVE_TRADING else "시뮬레이션"
-    values = strategy.get_ma_values(TICKER)
-
-    if values:
-        ma5  = values["ma_short"]
-        ma20 = values["ma_long"]
-        trend = "매수 포지션" if ma5 > ma20 else "현금 대기"
-        logger.info(
-            f"[상태] 모드: {mode} | "
-            f"원화: {krw:,.0f}원 | "
-            f"코인: {(coin if coin else 0):.6f} | "
-            f"MA{SHORT_WINDOW}: {ma5:,.0f} | "
-            f"MA{LONG_WINDOW}: {ma20:,.0f} | "
-            f"{trend}"
-        )
+    """현재 상태를 출력합니다 (1시간마다)."""
+    if portfolio_executor:
+        portfolio_executor.print_status()
     else:
-        logger.info(f"[상태] 모드: {mode} | 원화: {krw:,.0f}원")
+        krw    = get_balance_krw()
+        coin   = get_balance_coin(TICKER)
+        mode   = "실거래" if LIVE_TRADING else "시뮬레이션"
+        values = strategy.get_ma_values(TICKER)
+
+        if values:
+            ma5  = values["ma_short"]
+            ma20 = values["ma_long"]
+            trend = "매수 포지션" if ma5 > ma20 else "현금 대기"
+            logger.info(
+                f"[상태] 모드: {mode} | "
+                f"원화: {krw:,.0f}원 | "
+                f"코인: {(coin if coin else 0):.6f} | "
+                f"MA{SHORT_WINDOW}: {ma5:,.0f} | "
+                f"MA{LONG_WINDOW}: {ma20:,.0f} | "
+                f"{trend}"
+            )
+        else:
+            logger.info(f"[상태] 모드: {mode} | 원화: {krw:,.0f}원")
 
 
 def main():
     mode_text = "실거래" if LIVE_TRADING else "시뮬레이션"
+
+    if portfolio_executor:
+        strategy_desc = f"포트폴리오 ({strategy.strategy_type})"
+        coins_desc = f"{len(strategy.coins)}개 코인"
+    else:
+        strategy_desc = f"MA 크로스 {SHORT_WINDOW}/{LONG_WINDOW}"
+        coins_desc = TICKER
+
     logger.info(f"=== 업비트 자동매매 시스템 시작 ({mode_text} 모드) ===")
-    logger.info(f"전략: 이동평균 크로스 MA{SHORT_WINDOW}/MA{LONG_WINDOW}")
-    logger.info(f"대상 코인: {TICKER} | 투자 비율: {INVEST_RATIO * 100:.0f}%")
+    logger.info(f"전략: {strategy_desc}")
+    logger.info(f"대상: {coins_desc}")
 
     send_message(
         f"자동매매 시작!\n"
         f"모드: {mode_text}\n"
-        f"전략: MA 크로스 {SHORT_WINDOW}/{LONG_WINDOW}\n"
-        f"코인: {TICKER}\n"
-        f"투자 비율: {INVEST_RATIO * 100:.0f}%\n"
+        f"전략: {strategy_desc}\n"
+        f"대상: {coins_desc}\n"
         f"텔레그램 명령어: /help"
     )
 
