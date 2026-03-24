@@ -111,3 +111,30 @@ backtest:
 
   save_to_db: false
   notify_on_complete: false
+
+# ─── 고급 백테스트 설정 (Phase 1~3) ────────────
+advanced_backtest:
+  # 1단계: 베이지안 최적화 (Optuna)
+  optuna:
+    n_trials: 50              # 전략당 최적화 시도 횟수
+    objective_metric: "sharpe" # 최적화 목표 (sharpe, calmar, return)
+    oos_window: 30            # OOS 기간 (일)
+
+  # 2단계: ML 전략 (LightGBM)
+  ml:
+    n_estimators: 200         # 부스팅 라운드 수
+    train_days: 180           # 학습 데이터 기간 (일)
+    retrain_days: 30          # 모델 재학습 주기 (일)
+    target_horizon: 5         # 수익률 예측 기간 (일)
+    top_k_options: [3, 5, 7]  # 선택할 상위 코인 수
+    weight_mode: "confidence" # equal 또는 confidence
+
+  # 3단계: 대안 데이터
+  alt_data:
+    fear_greed: true          # 공포탐욕 지수
+    btc_dominance: true       # BTC 도미넌스
+    funding_rate: true        # 펀딩비율
+    funding_coins:            # 펀딩비율 수집 코인
+      - KRW-BTC
+      - KRW-ETH
+      - KRW-SOL
