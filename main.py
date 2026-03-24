@@ -64,7 +64,31 @@ logger.add(
 # 포트폴리오 전략 관련 변수
 portfolio_executor = None
 
-if STRATEGY_NAME == "ma_cross":
+if STRATEGY_NAME == "adaptive_volume":
+    # 적응형 거래량돌파 전략 (국면별 자동 전환)
+    from src.strategies.adaptive_volume_strategy import AdaptiveVolumeStrategy
+    from src.strategies.risk_manager import RiskManager
+    from src.trading.portfolio_executor import PortfolioExecutor
+
+    import yaml
+    _yaml_path = "config/settings.yaml"
+    with open(_yaml_path, "r", encoding="utf-8") as f:
+        _yaml_cfg = yaml.safe_load(f)
+
+    portfolio_cfg = _yaml_cfg.get("portfolio", {})
+    risk_cfg = portfolio_cfg.get("risk", {})
+
+    strategy = AdaptiveVolumeStrategy(
+        price_lookback=4,
+        vol_ratio=1.26,
+        top_k=portfolio_cfg.get("top_k", 5),
+        rebalance_days=portfolio_cfg.get("rebalance_days", 3),
+    )
+
+    risk_manager = RiskManager(config=risk_cfg)
+    portfolio_executor = PortfolioExecutor(strategy, risk_manager, LIVE_TRADING)
+
+elif STRATEGY_NAME == "ma_cross":
     from src.strategies.ma_cross import MACrossStrategy
     strategy = MACrossStrategy(short_window=SHORT_WINDOW, long_window=LONG_WINDOW)
 
@@ -80,7 +104,6 @@ elif STRATEGY_NAME.startswith("portfolio_"):
     with open(_yaml_path, "r", encoding="utf-8") as f:
         _yaml_cfg = yaml.safe_load(f)
 
-    # 포트폴리오 설정 로드
     portfolio_cfg = _yaml_cfg.get("portfolio", {})
     risk_cfg = portfolio_cfg.get("risk", {})
 
@@ -96,7 +119,6 @@ elif STRATEGY_NAME.startswith("portfolio_"):
     portfolio_executor = PortfolioExecutor(strategy, risk_manager, LIVE_TRADING)
 
 else:
-    # 기본: MA Cross
     from src.strategies.ma_cross import MACrossStrategy
     strategy = MACrossStrategy(short_window=SHORT_WINDOW, long_window=LONG_WINDOW)
     STRATEGY_NAME = "ma_cross"

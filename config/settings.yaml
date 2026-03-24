@@ -17,7 +17,7 @@ trading:
 #   "portfolio_combined"    → 복합 포트폴리오 (모멘텀+저변동성)
 #   "portfolio_ml"          → ML(LightGBM) 포트폴리오
 strategy:
-  name: "ma_cross"
+  name: "adaptive_volume"
   short_window: 5
   long_window: 20
   ticker: "KRW-BTC"

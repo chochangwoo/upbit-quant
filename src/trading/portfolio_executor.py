@@ -64,6 +64,10 @@ class PortfolioExecutor:
         # 3. 전략 신호 확인
         signal, info = self.strategy.check_signal()
 
+        if signal == "emergency_sell":
+            # 하락장 감지 → 전량 매도
+            return self._execute_regime_exit(info)
+
         if signal != "rebalance":
             reason = info.get("reason", "신호 없음")
             logger.debug(f"[포트폴리오] 리밸런싱 생략: {reason}")
@@ -162,6 +166,30 @@ class PortfolioExecutor:
         else:
             self.rm.remove_entry_price(coin)
             return {"coin": coin, "volume": volume, "price": price, "side": "sell", "amount": amount}
+
+    def _execute_regime_exit(self, info: dict) -> dict:
+        """하락장 감지 → 보유 코인 전량 매도, 현금 전환"""
+        logger.warning(f"[하락장] 전량 현금 전환 실행!")
+
+        executed = []
+        for coin in self.coins:
+            volume = get_balance_coin(coin)
+            if volume and volume > 0.00001:
+                result = self._execute_sell(coin, volume)
+                if result:
+                    executed.append(result)
+
+        total_sold = sum(e.get("amount", 0) for e in executed if e)
+        msg = (
+            f"<b>하락장 감지 - 전량 현금 전환</b>\n"
+            f"국면: {info.get('regime', 'bear')}\n"
+            f"사유: {info.get('reason', '하락장 감지')}\n"
+            f"매도 코인: {len(executed)}개\n"
+            f"매도 금액: {total_sold:,.0f}원"
+        )
+        send_message(msg)
+
+        return {"action": "regime_exit", "orders": executed, "details": info}
 
     def _execute_emergency_exit(self, mdd_info: dict) -> dict:
         """MDD 한도 초과 시 전량 매도"""
