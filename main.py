@@ -281,7 +281,7 @@ def main():
     mode_text = "실거래" if LIVE_TRADING else "시뮬레이션"
 
     if portfolio_executor:
-        strategy_desc = f"포트폴리오 ({strategy.strategy_type})"
+        strategy_desc = f"포트폴리오 ({strategy.get_strategy_name()})"
         coins_desc = f"{len(strategy.coins)}개 코인"
     else:
         strategy_desc = f"MA 크로스 {SHORT_WINDOW}/{LONG_WINDOW}"
