@@ -9,8 +9,13 @@ trading:
   # 실거래 여부 (true = 실거래, false = 시뮬레이션)
   live_trading: false
 
-# ─── 포트폴리오 전략 설정 (백테스트 + 실거래 공용) ──
+# ─── 실거래 전략 설정 ────────────────────────────
 strategy:
+  name: "ma_cross"
+  short_window: 5
+  long_window: 20
+  ticker: "KRW-BTC"
+  invest_ratio: 0.95
   # 전략 1: 크로스섹셔널 모멘텀
   cross_sectional_momentum:
     lookback_options: [7, 14, 21]
