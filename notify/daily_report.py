@@ -135,12 +135,14 @@ def format_trades_summary(trades: list) -> str:
 
     lines = []
     for t in trades:
-        # trade_type: "buy" or "sell"
-        emoji = "🟢 매수" if t["trade_type"] == "buy" else "🔴 매도"
+        side = t.get("side", t.get("trade_type", ""))
+        emoji = "매수" if side == "buy" else "매도"
+        signal = t.get("signal", "")
+        signal_text = f" ({signal})" if signal else ""
         lines.append(
             f"{emoji} {t['ticker']} | "
             f"가격: {float(t['price']):,.0f}원 | "
-            f"금액: {float(t['amount']):,.0f}원"
+            f"금액: {float(t['amount']):,.0f}원{signal_text}"
         )
     return "\n".join(lines)
 
@@ -164,15 +166,40 @@ def send_daily_report():
     # 3. 시장 코멘트 생성
     market_comment = get_market_comment()
 
-    # 4. 리포트 섹션 조합
+    # 4. 현재 국면 분석
+    regime_text = "분석 불가"
+    try:
+        df_btc = get_ohlcv("KRW-BTC", interval="day", count=60)
+        if df_btc is not None and len(df_btc) >= 50:
+            close = df_btc["close"]
+            btc_price = close.iloc[-1]
+            sma50 = close.rolling(50).mean().iloc[-1]
+            mom20 = btc_price / close.iloc[-20] - 1
+
+            if btc_price > sma50 and mom20 > 0.10:
+                regime_text = f"상승장 → 거래량 돌파 매수 중"
+            elif btc_price < sma50 and mom20 < -0.10:
+                regime_text = f"하락장 → 전량 현금 보유"
+            else:
+                regime_text = f"횡보장 → 거래량 돌파 매수 중"
+            regime_text += f"\nBTC: {btc_price:,.0f}원 | SMA50: {sma50:,.0f}원 | 20일 모멘텀: {mom20:+.1%}"
+    except Exception:
+        pass
+
+    # 5. 리포트 섹션 조합
     sections = [
         {
             "header": "📌 오늘의 전략",
             "body": (
-                "변동성 돌파 전략\n"
-                "→ 당일 시가 + 전일변동폭 × K(0.5) 돌파 시 매수\n"
-                "→ 매일 오전 8:50 전량 매도"
+                "적응형 거래량돌파 전략\n"
+                "→ 상승장/횡보장: 거래량 돌파 상위 5개 코인 매수\n"
+                "→ 하락장: 전량 현금 보유 (자동 전환)\n"
+                "→ 리밸런싱 주기: 3일"
             ),
+        },
+        {
+            "header": "📈 현재 시장 국면",
+            "body": regime_text,
         },
         {
             "header": "📊 전략 성능 지표",
