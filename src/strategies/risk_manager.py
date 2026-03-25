@@ -19,7 +19,7 @@ from src.api.upbit_client import get_balance_krw, get_balance_coin, get_current_
 
 # 리스크 관리 기본 설정
 DEFAULT_RISK_CONFIG = {
-    "max_invest_ratio": 0.90,       # 최대 투자 비율 (전체 자산의 90%)
+    "max_invest_ratio": 0.95,       # 최대 투자 비율 (전체 자산의 95%)
     "max_coin_weight": 0.30,        # 코인당 최대 비중 (30%)
     "mdd_limit": -0.15,             # MDD 한도 (-15% 초과 시 전량 매도)
     "stop_loss_per_coin": -0.10,    # 코인별 손절선 (-10%)
