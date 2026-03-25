@@ -253,7 +253,7 @@ class PortfolioExecutor:
 
         msg = (
             f"<b>[{mode}] 포트폴리오 리밸런싱</b>\n"
-            f"전략: {self.strategy.strategy_type}\n"
+            f"전략: {self.strategy.get_strategy_name()}\n"
             f"총 자산: {orders['total_value']:,.0f}원\n"
             f"\n목표 비중:\n{weight_text}"
             f"{sell_text}{buy_text}"
@@ -269,7 +269,7 @@ class PortfolioExecutor:
             f"[포트폴리오 상태] 모드: {mode} | "
             f"총 자산: {risk_status['total_value']:,.0f}원 | "
             f"MDD: {risk_status['current_mdd']:.1%} | "
-            f"전략: {self.strategy.strategy_type}"
+            f"전략: {self.strategy.get_strategy_name()}"
         )
 
         # 보유 코인 목록
