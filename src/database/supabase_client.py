@@ -72,3 +72,52 @@ def save_trade(
     except Exception as e:
         logger.error(f"매매 내역 저장 실패: {e}")
         return False
+
+
+def save_strategy_state(strategy_name: str, key: str, value: str) -> bool:
+    """
+    전략 상태를 DB에 저장합니다 (컨테이너 재시작 시에도 유지).
+
+    strategy_state 테이블: strategy_name TEXT, key TEXT, value TEXT, updated_at TIMESTAMPTZ
+    (strategy_name, key)가 PK → upsert 방식으로 저장
+    """
+    client = get_supabase_client()
+    if not client:
+        return False
+
+    try:
+        data = {
+            "strategy_name": strategy_name,
+            "key": key,
+            "value": value,
+        }
+        client.table("strategy_state").upsert(
+            data, on_conflict="strategy_name,key"
+        ).execute()
+        logger.debug(f"전략 상태 저장: {strategy_name}/{key} = {value}")
+        return True
+    except Exception as e:
+        logger.error(f"전략 상태 저장 실패: {e}")
+        return False
+
+
+def load_strategy_state(strategy_name: str, key: str) -> str | None:
+    """전략 상태를 DB에서 로드합니다."""
+    client = get_supabase_client()
+    if not client:
+        return None
+
+    try:
+        result = (
+            client.table("strategy_state")
+            .select("value")
+            .eq("strategy_name", strategy_name)
+            .eq("key", key)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]["value"]
+        return None
+    except Exception as e:
+        logger.error(f"전략 상태 로드 실패: {e}")
+        return None

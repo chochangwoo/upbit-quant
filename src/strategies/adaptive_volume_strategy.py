@@ -18,11 +18,12 @@ src/strategies/adaptive_volume_strategy.py - 적응형 거래량돌파 실거래
 import time
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from loguru import logger
 
 from src.api.upbit_client import get_ohlcv, get_current_price
 from src.strategies.base import BaseStrategy
+from src.database.supabase_client import save_strategy_state, load_strategy_state
 
 
 # 대상 코인 13종
@@ -63,12 +64,30 @@ class AdaptiveVolumeStrategy(BaseStrategy):
         self.bear_threshold = bear_threshold
 
         self.coins = TARGET_COINS
-        self.last_rebalance_date = None
         self.current_regime = None
         self.current_weights = {}
 
+        # DB에서 마지막 리밸런싱 날짜 복원 (컨테이너 재시작 대응)
+        self.last_rebalance_date = self._load_last_rebalance_date()
+        if self.last_rebalance_date:
+            logger.info(f"[상태복원] 마지막 리밸런싱: {self.last_rebalance_date}")
+
     def get_strategy_name(self) -> str:
         return "adaptive_volume"
+
+    def _load_last_rebalance_date(self) -> date | None:
+        """DB에서 마지막 리밸런싱 날짜를 복원합니다."""
+        try:
+            value = load_strategy_state("adaptive_volume", "last_rebalance_date")
+            if value:
+                return datetime.strptime(value, "%Y-%m-%d").date()
+        except Exception as e:
+            logger.warning(f"[상태복원] 리밸런싱 날짜 로드 실패: {e}")
+        return None
+
+    def _save_last_rebalance_date(self, d: date):
+        """리밸런싱 날짜를 DB에 저장합니다."""
+        save_strategy_state("adaptive_volume", "last_rebalance_date", d.isoformat())
 
     def _detect_regime(self) -> str:
         """BTC 가격 기반 시장 국면을 감지합니다."""
@@ -219,6 +238,7 @@ class AdaptiveVolumeStrategy(BaseStrategy):
             }
 
         self.last_rebalance_date = today
+        self._save_last_rebalance_date(today)
         self.current_weights = target_weights
 
         return "rebalance", {
