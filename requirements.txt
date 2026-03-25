@@ -11,7 +11,7 @@ pyupbit==0.2.33
 python-dotenv==1.0.0
 
 # Supabase (클라우드 DB) 연동
-supabase==2.3.5
+supabase>=2.10.0
 
 # 텔레그램 알림 봇
 python-telegram-bot==20.7
