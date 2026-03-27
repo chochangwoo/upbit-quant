@@ -183,13 +183,9 @@ class ReportGenerator:
     def save_to_db(self):
         """전략별 결과를 Supabase backtest_results 테이블에 저장합니다."""
         try:
-            from src.database.supabase_client import get_supabase_client
+            from src.database.supabase_client import insert_table
         except ImportError:
             logger.warning("Supabase 클라이언트를 임포트할 수 없습니다.")
-            return
-
-        client = get_supabase_client()
-        if not client:
             return
 
         for result in self.results:
@@ -199,7 +195,7 @@ class ReportGenerator:
 
             data = {
                 "strategy_name": s["strategy_name"],
-                "ticker": "KRW-ALL",  # 전체 코인 대상
+                "ticker": "KRW-ALL",
                 "start_date": start,
                 "end_date": end,
                 "total_return": round(s["total_return"], 4),
@@ -210,11 +206,10 @@ class ReportGenerator:
                 "avg_hold_days": self.config.get("rebalance_days", 3),
                 "created_at": datetime.now().isoformat(),
             }
-            try:
-                client.table("backtest_results").insert(data).execute()
+            if insert_table("backtest_results", data):
                 logger.info(f"DB 저장 완료: {s['strategy_name']}")
-            except Exception as e:
-                logger.error(f"DB 저장 실패 ({s['strategy_name']}): {e}")
+            else:
+                logger.error(f"DB 저장 실패: {s['strategy_name']}")
 
     def send_telegram(self, chart_path: str = None):
         """비교 결과 요약 + 그래프 이미지를 텔레그램으로 전송합니다."""

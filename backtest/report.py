@@ -497,17 +497,12 @@ def save_results_to_db(results: list, validation_results: dict):
         validation_results: 전략별 검증 결과 딕셔너리
     """
     try:
-        from src.database.supabase_client import get_supabase_client
+        from src.database.supabase_client import insert_table
         from datetime import datetime
-
-        client = get_supabase_client()
-        if not client:
-            return
 
         for r in results:
             name = r["strategy_name"]
             metrics = r.get("metrics", {})
-            val = validation_results.get(name, {})
 
             data = {
                 "strategy_name": name,
@@ -522,8 +517,8 @@ def save_results_to_db(results: list, validation_results: dict):
                 "avg_hold_days": 0,
                 "created_at": datetime.now().isoformat(),
             }
-            client.table("backtest_results").insert(data).execute()
-            logger.info(f"  DB 저장 완료: {name}")
+            if insert_table("backtest_results", data):
+                logger.info(f"  DB 저장 완료: {name}")
 
     except Exception as e:
         logger.warning(f"DB 저장 실패: {e}")

@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from notify.telegram_bot import send_report, send_message
-from src.database.supabase_client import get_supabase_client
+from src.database.supabase_client import query_table
 from src.api.upbit_client import get_current_price, get_ohlcv
 
 
@@ -41,24 +41,13 @@ def get_yesterday_trades() -> list:
     Supabase DB에서 어제 실행된 매매 내역을 조회합니다.
     반환값: 매매 내역 리스트 (없으면 빈 리스트)
     """
-    # TODO: 구현 예정
-    client = get_supabase_client()
-    if not client:
-        return []
-
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    try:
-        result = (
-            client.table("trades")
-            .select("*")
-            .gte("created_at", f"{yesterday}T00:00:00")
-            .lte("created_at", f"{yesterday}T23:59:59")
-            .execute()
-        )
-        return result.data if result.data else []
-    except Exception as e:
-        logger.error(f"어제 매매 내역 조회 실패: {e}")
-        return []
+    return query_table(
+        "trades",
+        filters={
+            "and": f"(created_at.gte.{yesterday}T00:00:00,created_at.lte.{yesterday}T23:59:59)",
+        },
+    )
 
 
 def calculate_performance_metrics(trades: list) -> dict:
