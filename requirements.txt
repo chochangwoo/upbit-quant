@@ -10,8 +10,7 @@ pyupbit==0.2.33
 # 환경변수 (.env 파일) 읽기
 python-dotenv==1.0.0
 
-# Supabase (클라우드 DB) 연동
-supabase>=2.10.0
+# Supabase는 REST API를 requests로 직접 호출 (라이브러리 httpx 충돌 방지)
 
 # 텔레그램 알림 봇
 python-telegram-bot==20.7
