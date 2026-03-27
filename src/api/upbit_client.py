@@ -77,6 +77,42 @@ def get_balance_coin(ticker: str) -> float:
         return 0
 
 
+def get_avg_buy_price(ticker: str) -> float:
+    """
+    특정 코인의 평균 매입가를 조회합니다.
+    ticker 예: 'KRW-BTC' → 'BTC' 부분만 추출해서 조회
+    """
+    upbit = get_upbit_client()
+    if not upbit:
+        return 0
+    try:
+        coin = ticker.split("-")[1]
+        balances = upbit.get_balances()
+        for b in balances:
+            if b["currency"] == coin:
+                return float(b.get("avg_buy_price", 0))
+        return 0
+    except Exception as e:
+        logger.error(f"{ticker} 평균 매입가 조회 실패: {e}")
+        return 0
+
+
+def get_balances_all() -> list:
+    """
+    전체 보유 자산 목록을 조회합니다.
+    반환값: [{"currency": "BTC", "balance": 0.001, "avg_buy_price": 100000000}, ...]
+    """
+    upbit = get_upbit_client()
+    if not upbit:
+        return []
+    try:
+        balances = upbit.get_balances()
+        return balances if balances else []
+    except Exception as e:
+        logger.error(f"전체 잔고 조회 실패: {e}")
+        return []
+
+
 def buy_market_order(ticker: str, amount_krw: float):
     """
     시장가 매수 주문을 실행합니다.
