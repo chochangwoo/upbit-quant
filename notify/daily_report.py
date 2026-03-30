@@ -274,25 +274,29 @@ def send_daily_report():
                 f"    현재가 {h['price']:,.0f} | {avg_text}"
             )
 
-    # 2. 시장 국면
+    # 2. 시장 국면 (ADX v2)
     regime_text = "분석 불가"
     try:
+        from src.strategies.strategy_router import calc_adx
         df_btc = get_ohlcv("KRW-BTC", interval="day", count=60)
-        if df_btc is not None and len(df_btc) >= 50:
+        if df_btc is not None and len(df_btc) >= 30:
             close = df_btc["close"]
             btc_price = close.iloc[-1]
-            sma50 = close.rolling(50).mean().iloc[-1]
-            mom20 = btc_price / close.iloc[-20] - 1
 
-            if btc_price > sma50 and mom20 > 0.10:
-                regime_text = "상승장 → 거래량 돌파 매수 중"
-            elif btc_price < sma50 and mom20 < -0.10:
+            adx_result = calc_adx(df_btc["high"], df_btc["low"], close, 14)
+            adx = adx_result["adx"]
+            plus_di = adx_result["plus_di"]
+            minus_di = adx_result["minus_di"]
+
+            if adx > 25 and plus_di > minus_di:
+                regime_text = "상승장 → 거래량돌파 매수 중"
+            elif adx > 25 and minus_di > plus_di:
                 regime_text = "하락장 → 전량 현금 보유"
             else:
-                regime_text = "횡보장 → 거래량 돌파 매수 중"
+                regime_text = "횡보장 → 거래량돌파 매수 중 (유지)"
             regime_text += (
-                f"\nBTC: {btc_price:,.0f}원 | SMA50: {sma50:,.0f}원 | "
-                f"20일 모멘텀: {mom20:+.1%}"
+                f"\nBTC: {btc_price:,.0f}원\n"
+                f"ADX: {adx:.1f} | +DI: {plus_di:.1f} | -DI: {minus_di:.1f}"
             )
     except Exception:
         pass

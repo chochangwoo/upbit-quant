@@ -182,7 +182,7 @@ CREATE TABLE backtest_results (
 - **목적**: 업비트 암호화폐 자동매매 봇
 - **언어**: Python 3.13
 - **OS**: Windows 11 (개발) / Railway.app (배포 및 24/7 운영)
-- **현재 전략**: 이동평균 크로스 5/20 (MA Cross) ← 백테스트 결과 최우선 구현
+- **현재 전략**: 전략 라우터 v2 (ADX 국면 + 거래량돌파 중심) ← v2 가이드 기반
 - **배포 방식**: GitHub push → Railway.app 자동 배포
 
 ## 기술 스택
@@ -298,6 +298,64 @@ strategy:
 
 ### 관련 파일
 - `src/strategies/volatility_breakout.py`
+
+---
+
+## 기능 2.5: 국면별 전략 라우터 v2 (ADX + 거래량돌파) - 구현 완료
+
+### 개요
+v2 가이드(crypto_strategy_guide_v2.md) 기반으로 전면 개편:
+- 국면 판단: SMA50+모멘텀 → **ADX 기반** (횡보 72%→44%, 전환비용 1%p 절감)
+- 전략: BB+RSI 제거, **거래량돌파를 전 국면에서 유지** (횡보장에서도 +25.72%)
+- 하락장에서만 현금 전환 (하락장 거래량돌파 -22.76% 방지)
+
+### 국면 판단 기준 (BTC 기준, ADX)
+- **상승장(Bull)**: ADX > 25 AND +DI > -DI (강한 상승 추세)
+- **하락장(Bear)**: ADX > 25 AND -DI > +DI (강한 하락 추세)
+- **횡보장(Sideways)**: ADX <= 25 (추세 약함)
+
+### 전략 매핑
+| 국면 | 전략 | 근거 |
+|------|------|------|
+| 상승장 | 적응형 거래량돌파 | 실측 +179.48% |
+| 횡보장 | 적응형 거래량돌파 | 실측 +25.72% (BB+RSI는 -119%) |
+| 하락장 | 현금 보유 | 거래량돌파 하락장 -22.76% 방지 |
+
+### 국면 전환 안정성
+- 전환 감지 후 2일(confirmation_days) 동일 국면 유지 시에만 실제 전환
+- ADX 기반: 연 28.3회 전환 (기존 SMA 39.2회 대비 안정적)
+
+### 관련 파일
+- `src/strategies/strategy_router.py` — 전략 라우터 v2 (ADX + calc_adx 함수)
+- `src/strategies/adaptive_volume_strategy.py` — 거래량돌파 전략
+- `src/strategies/cash_hold.py` — 하락장 방어
+- `config/settings.yaml` → `regime_detection:`, `strategies:` 섹션
+- `docs/crypto_strategy_guide_v2.md` — 전략 가이드 v2 (근거 문서)
+
+### Supabase 테이블
+| 테이블 | 용도 |
+|--------|------|
+| strategy_switches | 국면 전환 이력 (ADX/+DI/-DI 추가) |
+
+### 설정값 (config/settings.yaml)
+```yaml
+strategy:
+  name: "strategy_router"    # 국면별 자동 스위칭 활성화
+
+regime_detection:
+  adx_period: 14              # ADX 계산 기간
+  adx_trend_threshold: 25     # 추세 판단 임계값
+  confirmation_days: 2        # 전환 확인 대기일
+
+strategies:
+  volume_breakout:            # 상승+횡보 공통
+    price_lookback: 4
+    vol_ratio: 1.26
+    top_k: 5
+    rebalance_days: 3
+  cash_hold:                  # 하락장
+    enabled: true
+```
 
 ---
 
@@ -485,10 +543,19 @@ backtest/coin_screener/
 - [x] 코인 선별 전략 4종 구현 (모멘텀/거래량/평균회귀/복합)
 - [x] 코인 선별 전용 백테스팅 엔진 구현
 - [x] 비교 리포트 생성기 구현
-- [ ] ⭐ 이동평균 크로스 5/20 실거래 전략 구현 (최우선)
-- [ ] MA 크로스 전략 시뮬레이션 테스트
+- [x] BB+RSI 평균회귀 전략 구현 (횡보장 대응) → v2에서 제거 (실측 -119%)
+- [x] 하락장 방어 전략 (CashHold) 구현
+- [x] 전략 라우터 (StrategyRouter) 구현 — 국면별 자동 스위칭
+- [x] main.py에 전략 라우터 연결
+- [x] BB+RSI 매매 텔레그램 알림 구현 → v2에서 제거
+- [x] 국면 전환 텔레그램 알림 구현
+- [x] strategy_switches DB 스키마 작성
+- [x] **전략 라우터 v2 구현 — ADX 국면 판단 + 거래량돌파 중심 (2026-03-30)**
+- [x] **BB+RSI 제거, main.py 단순화 (2026-03-30)**
+- [ ] Supabase strategy_switches 테이블에 ADX 컬럼 추가
+- [ ] LIVE_TRADING=false에서 전략 라우터 v2 시뮬레이션 테스트
 - [ ] Railway.app 배포 및 24/7 운영
-- [ ] 일일 리포트 봇 구현
+- [ ] 일일 국면 리포트 봇 구현
 - [ ] 백테스팅 결과 시각화
 
 ## 주의사항

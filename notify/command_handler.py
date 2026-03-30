@@ -1,13 +1,15 @@
 """
-notify/command_handler.py - 텔레그램 명령어 핸들러
+notify/command_handler.py - 텔레그램 명령어 핸들러 (v2)
 
 텔레그램 봇에서 명령어를 수신하여 현재 전략 상태 조회 등 기능을 실행합니다.
 별도 스레드에서 동작하며, main.py의 트레이딩 루프와 독립적으로 운영됩니다.
 
+v2 변경: ADX 기반 국면 판단, 거래량돌파 중심 전략 반영
+
 지원 명령어:
     /help       - 사용 가능한 명령어 목록
     /status     - 현재 봇 상태 (전략, 국면, 잔고, 포트폴리오)
-    /regime     - 현재 시장 국면 상세 정보
+    /regime     - 현재 시장 국면 상세 정보 (ADX 기반)
     /portfolio  - 보유 코인 포트폴리오 상세 (매입가 대비 수익률 포함)
     /report     - 일일 리포트 즉시 전송
 """
@@ -36,8 +38,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>사용 가능한 명령어</b>\n"
         "─────────────────\n"
         "<b>상태 조회</b>\n"
-        "/status - 봇 상태 (전략, 잔고)\n"
-        "/regime - 시장 국면 (BTC SMA50, 모멘텀)\n"
+        "/status - 봇 상태 (전략, 국면, 잔고)\n"
+        "/regime - 시장 국면 (ADX, +DI/-DI)\n"
         "/portfolio - 포트폴리오 (매입가, 손익)\n"
         "─────────────────\n"
         "<b>리포트</b>\n"
@@ -56,8 +58,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         mode = "실거래" if LIVE_TRADING else "시뮬레이션"
 
-        if STRATEGY_NAME == "adaptive_volume":
+        if STRATEGY_NAME in ("strategy_router", "adaptive_volume"):
             from src.strategies.adaptive_volume_strategy import TARGET_COINS
+            from src.strategies.strategy_router import calc_adx, REGIME_NAMES, STRATEGY_NAMES
+            from src.api.upbit_client import get_ohlcv
             from src.database.supabase_client import load_strategy_state
 
             # 원화 잔고
@@ -77,11 +81,31 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             total = krw + total_coin_value
 
+            # 현재 국면 (ADX 기반)
+            regime_text = "판단 중..."
+            strategy_text = "초기화 중..."
+            adx_text = ""
+            try:
+                saved_regime = load_strategy_state("strategy_router", "current_regime")
+                if saved_regime:
+                    regime_text = REGIME_NAMES.get(saved_regime, saved_regime)
+                    strategy_text = STRATEGY_NAMES.get(saved_regime, "알 수 없음")
+
+                # ADX 실시간 계산
+                df = get_ohlcv("KRW-BTC", interval="day", count=52)
+                if df is not None and len(df) >= 28:
+                    adx_result = calc_adx(df["high"], df["low"], df["close"], 14)
+                    adx_text = (
+                        f"\nADX: {adx_result['adx']:.1f} | "
+                        f"+DI: {adx_result['plus_di']:.1f} | "
+                        f"-DI: {adx_result['minus_di']:.1f}"
+                    )
+            except Exception:
+                pass
+
             # 마지막 리밸런싱 날짜
             last_rebal = load_strategy_state("adaptive_volume", "last_rebalance_date")
             rebal_text = last_rebal if last_rebal else "없음"
-
-            # 리밸런싱까지 남은 일수
             if last_rebal:
                 last_date = datetime.strptime(last_rebal, "%Y-%m-%d").date()
                 days_since = (datetime.now().date() - last_date).days
@@ -91,13 +115,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             holdings_text = "\n".join(holdings) if holdings else "  없음"
 
             text = (
-                f"<b>봇 상태</b>\n"
+                f"<b>봇 상태 (v2)</b>\n"
                 f"─────────────────\n"
                 f"모드: {mode}\n"
-                f"전략: 적응형 거래량돌파\n"
+                f"전략: {strategy_text}\n"
+                f"국면: {regime_text}{adx_text}\n"
                 f"대상: 13개 코인\n"
-                f"리밸런싱 주기: 3일\n"
-                f"마지막 리밸런싱: {rebal_text}\n"
+                f"리밸런싱: {rebal_text}\n"
                 f"─────────────────\n"
                 f"원화 잔고: {krw:,.0f}원\n"
                 f"코인 평가: {total_coin_value:,.0f}원\n"
@@ -134,54 +158,81 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """현재 시장 국면 상세 정보를 조회합니다."""
+    """현재 시장 국면 상세 정보를 조회합니다 (ADX 기반 v2)."""
     try:
         from src.api.upbit_client import get_ohlcv
+        from src.strategies.strategy_router import calc_adx
 
         df = get_ohlcv("KRW-BTC", interval="day", count=60)
-        if df is None or len(df) < 50:
+        if df is None or len(df) < 30:
             await update.message.reply_text("BTC 데이터를 가져올 수 없습니다.")
             return
 
         close = df["close"]
         current_price = close.iloc[-1]
-        sma50 = close.rolling(50).mean().iloc[-1]
-        momentum_20d = current_price / close.iloc[-20] - 1
+
+        # ADX 계산 (v2 핵심)
+        adx_result = calc_adx(df["high"], df["low"], df["close"], 14)
+        adx = adx_result["adx"]
+        plus_di = adx_result["plus_di"]
+        minus_di = adx_result["minus_di"]
 
         # 국면 판단
-        if current_price > sma50 and momentum_20d > 0.10:
-            regime = "상승장 (Bull)"
-            action = "거래량 돌파 상위 5개 코인 매수"
-        elif current_price < sma50 and momentum_20d < -0.10:
-            regime = "하락장 (Bear)"
-            action = "전량 현금 보유 (매매 중지)"
+        if adx > 25:
+            if plus_di > minus_di:
+                regime = "상승장 (Bull)"
+                action = "거래량돌파 상위 5개 코인 매수"
+            else:
+                regime = "하락장 (Bear)"
+                action = "전량 현금 보유 (매매 중지)"
         else:
             regime = "횡보장 (Sideways)"
-            action = "거래량 돌파 상위 5개 코인 매수"
+            action = "거래량돌파 상위 5개 코인 매수 (유지)"
 
-        # 추가 지표
+        # 보조 지표
         sma20 = close.rolling(20).mean().iloc[-1]
+        sma50 = close.rolling(50).mean().iloc[-1] if len(close) >= 50 else 0
         momentum_7d = current_price / close.iloc[-7] - 1
+        momentum_20d = current_price / close.iloc[-20] - 1
         volatility = close.tail(20).pct_change().std() * (365 ** 0.5)
 
+        # 추세 강도 해석
+        if adx > 40:
+            trend_strength = "매우 강한 추세"
+        elif adx > 25:
+            trend_strength = "강한 추세"
+        elif adx > 20:
+            trend_strength = "약한 추세"
+        else:
+            trend_strength = "추세 없음 (횡보)"
+
         text = (
-            f"<b>시장 국면 분석</b>\n"
+            f"<b>시장 국면 분석 (ADX v2)</b>\n"
             f"─────────────────\n"
             f"현재 국면: <b>{regime}</b>\n"
             f"전략 행동: {action}\n"
             f"─────────────────\n"
-            f"<b>BTC 지표</b>\n"
+            f"<b>ADX 지표 (핵심)</b>\n"
+            f"  ADX: {adx:.1f} ({trend_strength})\n"
+            f"  +DI: {plus_di:.1f} (매수 압력)\n"
+            f"  -DI: {minus_di:.1f} (매도 압력)\n"
+            f"  DI 차이: {plus_di - minus_di:+.1f}\n"
+            f"─────────────────\n"
+            f"<b>BTC 보조 지표</b>\n"
             f"  현재가: {current_price:,.0f}원\n"
             f"  SMA20: {sma20:,.0f}원\n"
-            f"  SMA50: {sma50:,.0f}원\n"
+        )
+        if sma50:
+            text += f"  SMA50: {sma50:,.0f}원\n"
+        text += (
             f"  7일 모멘텀: {momentum_7d:+.1%}\n"
             f"  20일 모멘텀: {momentum_20d:+.1%}\n"
             f"  연환산 변동성: {volatility:.1%}\n"
             f"─────────────────\n"
-            f"<b>국면 전환 기준</b>\n"
-            f"  상승장: 가격 &gt; SMA50 AND 20일 모멘텀 &gt; +10%\n"
-            f"  하락장: 가격 &lt; SMA50 AND 20일 모멘텀 &lt; -10%\n"
-            f"  횡보장: 그 외"
+            f"<b>국면 전환 기준 (ADX)</b>\n"
+            f"  상승장: ADX &gt; 25 AND +DI &gt; -DI\n"
+            f"  하락장: ADX &gt; 25 AND -DI &gt; +DI\n"
+            f"  횡보장: ADX &lt;= 25"
         )
     except Exception as e:
         text = f"국면 분석 실패: {e}"
@@ -317,7 +368,7 @@ async def _post_init(application: Application):
     commands = [
         BotCommand("help", "명령어 목록"),
         BotCommand("status", "봇 상태 (전략, 국면, 잔고)"),
-        BotCommand("regime", "시장 국면 상세"),
+        BotCommand("regime", "시장 국면 상세 (ADX)"),
         BotCommand("portfolio", "포트폴리오 (매입가, 손익)"),
         BotCommand("report", "일일 리포트 즉시 전송"),
     ]

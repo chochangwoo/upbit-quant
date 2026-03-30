@@ -3,12 +3,12 @@
 실행 방법: python main.py
 
 [전략 모드]
-  1. ma_cross    : 이동평균 크로스 5/20 (단일 코인)
-  2. portfolio   : 멀티코인 포트폴리오 (백테스트 기반)
-     - momentum  : 모멘텀 전략
-     - rsi       : RSI 역추세 전략
-     - combined  : 복합 전략 (모멘텀 + 저변동성)
-     - ml        : ML(LightGBM) 전략
+  1. strategy_router : ADX 국면 판단 + 거래량돌파 중심 (v2 권장)
+     - 상승장+횡보장 → 거래량돌파
+     - 하락장 → 현금보유
+  2. adaptive_volume : 적응형 거래량돌파 (단독)
+  3. ma_cross        : 이동평균 크로스 5/20 (단일 코인)
+  4. portfolio_*     : 멀티코인 포트폴리오 (백테스트 기반)
 
   전략 선택: config/settings.yaml → strategy.name
 """
@@ -63,8 +63,30 @@ logger.add(
 
 # 포트폴리오 전략 관련 변수
 portfolio_executor = None
+# 전략 라우터 변수
+strategy_router = None
 
-if STRATEGY_NAME == "adaptive_volume":
+if STRATEGY_NAME == "strategy_router":
+    # 국면별 자동 전략 스위칭 (권장)
+    from src.strategies.strategy_router import StrategyRouter
+    from src.strategies.risk_manager import RiskManager
+    from src.trading.portfolio_executor import PortfolioExecutor
+
+    import yaml
+    _yaml_path = "config/settings.yaml"
+    with open(_yaml_path, "r", encoding="utf-8") as f:
+        _yaml_cfg = yaml.safe_load(f)
+
+    strategy_router = StrategyRouter(_yaml_cfg)
+    strategy = strategy_router
+
+    # 포트폴리오 실행기 (상승장 거래량돌파 리밸런싱용)
+    portfolio_cfg = _yaml_cfg.get("portfolio", {})
+    risk_cfg = portfolio_cfg.get("risk", {})
+    risk_manager = RiskManager(config=risk_cfg)
+    portfolio_executor = PortfolioExecutor(strategy_router, risk_manager, LIVE_TRADING)
+
+elif STRATEGY_NAME == "adaptive_volume":
     # 적응형 거래량돌파 전략 (국면별 자동 전환)
     from src.strategies.adaptive_volume_strategy import AdaptiveVolumeStrategy
     from src.strategies.risk_manager import RiskManager
@@ -230,10 +252,74 @@ def do_sell(info: dict):
 # 트레이딩 루프
 # ─────────────────────────────────────────
 
+def do_regime_change_sell(info: dict):
+    """국면 전환(하락장)에 의한 보유 포지션 청산"""
+    positions = info.get("positions_to_close", [])
+    regime = info.get("regime", "")
+
+    for pos in positions:
+        ticker = pos.get("ticker", "")
+        volume = pos.get("volume", 0)
+
+        if not ticker or not volume:
+            continue
+
+        price = get_current_price(ticker)
+        if not price:
+            continue
+
+        amount = volume * price
+
+        if LIVE_TRADING:
+            result = sell_market_order(ticker, volume)
+            if result:
+                save_trade(
+                    strategy_name="strategy_router",
+                    ticker=ticker,
+                    side="sell",
+                    price=price,
+                    amount=amount,
+                    signal="regime_change_bear",
+                )
+                logger.info(f"[국면전환→하락장] {ticker} 청산: {amount:,.0f}원")
+        else:
+            logger.info(f"[시뮬] [국면전환→하락장] {ticker} 청산: {volume:.6f} ({amount:,.0f}원)")
+
+    total_sold = sum(
+        (p.get("volume", 0) * (get_current_price(p.get("ticker", "")) or 0))
+        for p in positions if p.get("ticker")
+    )
+    send_message(
+        f"<b>하락장 전환 - 포지션 청산 완료</b>\n"
+        f"국면: {regime}\n"
+        f"청산 코인: {len(positions)}개\n"
+        f"청산 금액: {total_sold:,.0f}원"
+    )
+
+
 def trading_job():
     """5분마다 실행되는 메인 트레이딩 로직입니다."""
     try:
-        if portfolio_executor:
+        if strategy_router:
+            # 전략 라우터 v2: ADX 국면 판단 + 거래량돌파 중심
+            sig, info = strategy_router.check_signal()
+
+            if sig == "regime_change_sell":
+                # 하락장 전환 → 보유 포지션 전량 청산
+                do_regime_change_sell(info)
+            elif sig == "emergency_sell":
+                # 하락장 전량 매도 → 포트폴리오 실행기 위임
+                if portfolio_executor:
+                    result = portfolio_executor._execute_regime_exit(info)
+                    logger.info(f"[라우터 v2] 하락장 전량 매도: {result['action']}")
+            elif sig == "rebalance":
+                # 상승장/횡보장 거래량돌파 리밸런싱
+                if portfolio_executor:
+                    result = portfolio_executor.run_rebalance()
+                    if result["action"] != "skip":
+                        logger.info(f"[라우터 v2] 리밸런싱 실행: {result['action']}")
+
+        elif portfolio_executor:
             # 포트폴리오 모드: 리밸런싱 실행
             result = portfolio_executor.run_rebalance()
             if result["action"] != "skip":
@@ -253,7 +339,20 @@ def trading_job():
 
 def print_status():
     """현재 상태를 출력합니다 (1시간마다)."""
-    if portfolio_executor:
+    if strategy_router:
+        # 전략 라우터 상태
+        from src.strategies.strategy_router import REGIME_NAMES, STRATEGY_NAMES
+        regime = strategy_router.get_current_regime()
+        strat_name = strategy_router.get_current_strategy_name()
+        mode = "실거래" if LIVE_TRADING else "시뮬레이션"
+        logger.info(
+            f"[라우터 상태] 모드: {mode} | "
+            f"국면: {REGIME_NAMES.get(regime, regime)} | "
+            f"전략: {strat_name}"
+        )
+        if portfolio_executor:
+            portfolio_executor.print_status()
+    elif portfolio_executor:
         portfolio_executor.print_status()
     else:
         krw    = get_balance_krw()
@@ -280,7 +379,10 @@ def print_status():
 def main():
     mode_text = "실거래" if LIVE_TRADING else "시뮬레이션"
 
-    if portfolio_executor:
+    if strategy_router:
+        strategy_desc = f"전략 라우터 v2 (ADX 국면 + 거래량돌파)"
+        coins_desc = f"{len(strategy_router.coins)}개 코인"
+    elif portfolio_executor:
         strategy_desc = f"포트폴리오 ({strategy.get_strategy_name()})"
         coins_desc = f"{len(strategy.coins)}개 코인"
     else:
