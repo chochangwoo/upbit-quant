@@ -275,7 +275,9 @@ def plot_validation_chart(validation_result: dict, strategy_name: str):
     # ── 왼쪽: 몬테카를로 분포 ──
     sim_returns = mc["simulated_returns"]
     if len(sim_returns) > 0:
-        axes[0].hist(sim_returns * 100, bins=50, alpha=0.7, color="#3498DB",
+        # bin 수를 데이터 범위에 맞게 조정
+        n_bins = min(50, max(10, len(np.unique(np.round(sim_returns * 100, 1)))))
+        axes[0].hist(sim_returns * 100, bins=n_bins, alpha=0.7, color="#3498DB",
                      edgecolor="white", label="무작위 시뮬레이션")
         axes[0].axvline(mc["actual_return"] * 100, color="#E74C3C", linewidth=2,
                         linestyle="--", label=f"실제: {mc['actual_return']:+.2%}")
