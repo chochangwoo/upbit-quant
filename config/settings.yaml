@@ -8,6 +8,8 @@
 trading:
   # 실거래 여부 (true = 실거래, false = 시뮬레이션)
   live_trading: true
+  # 초기 투자 자본 (수익률 계산용)
+  initial_capital: 2000000
 
 # ─── 실거래 전략 설정 ────────────────────────────
 # name 옵션:
@@ -38,14 +40,15 @@ regime_detection:
 # v2 변경: BB+RSI 제거, 상승+횡보 모두 거래량돌파 사용
 strategies:
   # 상승장+횡보장 공통: 적응형 거래량돌파
-  # 실측: 상승장 +179%, 횡보장 +25.72%, 하락장 -22.76%
+  # 2026-04-05 백테스트 결과 반영 (선택 1, 전체기간 +15.3%, 샤프 0.10)
+  # 이전 값: price_lookback=4, vol_ratio=1.26, top_k=5
   volume_breakout:
     enabled: true
     regime: bull_and_sideways
-    price_lookback: 4
-    vol_ratio: 1.26
-    top_k: 5
-    rebalance_days: 3
+    price_lookback: 2       # 변경: 4 → 2 (고가 기준일 단축)
+    vol_ratio: 1.1          # 변경: 1.26 → 1.1 (거래량 배율 완화)
+    top_k: 3                # 변경: 5 → 3 (집중 투자)
+    rebalance_days: 3       # 유지
 
   # 하락장 전략: 현금 보유
   cash_hold:

@@ -393,13 +393,27 @@ def main():
     logger.info(f"전략: {strategy_desc}")
     logger.info(f"대상: {coins_desc}")
 
-    send_message(
+    # 텔레그램 시작 메시지 (파라미터 포함)
+    start_msg = (
         f"자동매매 시작!\n"
         f"모드: {mode_text}\n"
         f"전략: {strategy_desc}\n"
         f"대상: {coins_desc}\n"
-        f"텔레그램 명령어: /help"
     )
+    if strategy_router:
+        # 현재 적용 중인 파라미터 표시
+        vol_cfg = _yaml_cfg.get("strategies", {}).get("volume_breakout", {})
+        start_msg += (
+            f"─────────────────\n"
+            f"파라미터 (2026-04-05 백테스트 반영)\n"
+            f"  거래량 배율: {vol_cfg.get('vol_ratio', 1.1)}x\n"
+            f"  고가 기준일: {vol_cfg.get('price_lookback', 2)}일\n"
+            f"  매수 코인 수: {vol_cfg.get('top_k', 3)}개\n"
+            f"  리밸런싱 주기: {vol_cfg.get('rebalance_days', 3)}일\n"
+            f"  하락장: 현금보유 (유지)\n"
+        )
+    start_msg += f"─────────────────\n텔레그램 명령어: /help"
+    send_message(start_msg)
 
     # 텔레그램 명령어 핸들러 시작 (별도 스레드)
     try:

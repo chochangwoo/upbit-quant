@@ -114,6 +114,38 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             holdings_text = "\n".join(holdings) if holdings else "  없음"
 
+            # 현재 파라미터 읽기
+            import yaml
+            try:
+                with open("config/settings.yaml", "r", encoding="utf-8") as f:
+                    _cfg = yaml.safe_load(f)
+                vol_cfg = _cfg.get("strategies", {}).get("volume_breakout", {})
+                param_text = (
+                    f"─────────────────\n"
+                    f"<b>파라미터</b>\n"
+                    f"  거래량 배율: {vol_cfg.get('vol_ratio', '-')}x\n"
+                    f"  고가 기준일: {vol_cfg.get('price_lookback', '-')}일\n"
+                    f"  매수 코인 수: {vol_cfg.get('top_k', '-')}개\n"
+                    f"  리밸런싱 주기: {vol_cfg.get('rebalance_days', '-')}일\n"
+                )
+            except Exception:
+                param_text = ""
+
+            # 초기 자본 대비 수익률
+            initial_capital = None
+            try:
+                initial_capital = _cfg.get("trading", {}).get("initial_capital")
+            except Exception:
+                pass
+            pnl_text = ""
+            if initial_capital and initial_capital > 0:
+                pnl = total - initial_capital
+                pnl_rate = pnl / initial_capital * 100
+                pnl_text = (
+                    f"초기 자본: {initial_capital:,.0f}원\n"
+                    f"수익률: {pnl_rate:+.2f}% ({pnl:+,.0f}원)\n"
+                )
+
             text = (
                 f"<b>봇 상태 (v2)</b>\n"
                 f"─────────────────\n"
@@ -122,10 +154,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"국면: {regime_text}{adx_text}\n"
                 f"대상: 13개 코인\n"
                 f"리밸런싱: {rebal_text}\n"
+                f"{param_text}"
                 f"─────────────────\n"
                 f"원화 잔고: {krw:,.0f}원\n"
                 f"코인 평가: {total_coin_value:,.0f}원\n"
                 f"총 자산: {total:,.0f}원\n"
+                f"{pnl_text}"
                 f"─────────────────\n"
                 f"<b>보유 코인</b>\n{holdings_text}"
             )
