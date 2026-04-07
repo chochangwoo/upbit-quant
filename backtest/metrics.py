@@ -98,6 +98,21 @@ def calc_daily_win_rate(equity_curve: pd.Series) -> float:
     return (daily_returns > 0).mean()
 
 
+def calc_profit_factor(equity_curve: pd.Series) -> float:
+    """
+    프로핏 팩터: 일별 수익률의 양수합 / |음수합|.
+    >1이면 평균적으로 수익이 손실을 초과. 손실일이 0이면 inf, 데이터 부족 시 0.
+    """
+    daily_returns = equity_curve.pct_change().dropna()
+    if len(daily_returns) == 0:
+        return 0.0
+    gains = daily_returns[daily_returns > 0].sum()
+    losses = -daily_returns[daily_returns < 0].sum()
+    if losses == 0:
+        return float("inf") if gains > 0 else 0.0
+    return float(gains / losses)
+
+
 def calc_all_metrics(equity_curve: pd.Series) -> dict:
     """전체 8가지 성과 지표를 한 번에 계산하여 딕셔너리로 반환합니다."""
     return {
@@ -109,6 +124,7 @@ def calc_all_metrics(equity_curve: pd.Series) -> dict:
         "MDD": calc_mdd(equity_curve),
         "칼마비율": calc_calmar_ratio(equity_curve),
         "일별승률": calc_daily_win_rate(equity_curve),
+        "프로핏팩터": calc_profit_factor(equity_curve),
     }
 
 

@@ -124,12 +124,24 @@ class StrategyRouter(BaseStrategy):
         regime_cfg = config.get("regime_detection", {})
         strategies_cfg = config.get("strategies", {})
         portfolio_cfg = config.get("portfolio", {})
+        bear_filter_cfg = config.get("bear_filter", {})
 
         # ADX 기반 국면 감지 파라미터
         self.adx_period = regime_cfg.get("adx_period", 14)
         self.adx_trend_threshold = regime_cfg.get("adx_trend_threshold", 25)
         self.confirmation_days = regime_cfg.get("confirmation_days", 2)
-        self.ohlcv_count = self.adx_period * 3 + 10  # ADX 계산에 충분한 데이터
+
+        # v3: 보조 하락 필터 (BTC SMA + 모멘텀)
+        self.bear_filter_enabled = bear_filter_cfg.get("enabled", False)
+        self.sma_period = bear_filter_cfg.get("sma_period", 200)
+        self.mom_window = bear_filter_cfg.get("mom_window", 30)
+        self.mom_threshold = bear_filter_cfg.get("mom_threshold", -0.03)
+
+        # OHLCV 데이터: ADX/SMA/모멘텀 모두 충족하도록 충분히 확보
+        self.ohlcv_count = max(
+            self.adx_period * 3 + 10,
+            self.sma_period + 30 if self.bear_filter_enabled else 0,
+        )
 
         # 거래량돌파 전략 (상승장 + 횡보장 공통)
         vol_cfg = strategies_cfg.get("volume_breakout", {})
@@ -160,10 +172,16 @@ class StrategyRouter(BaseStrategy):
         # DB에서 이전 국면 복원
         self._restore_regime()
 
+        version = "v3" if self.bear_filter_enabled else "v2"
+        bear_filter_msg = (
+            f" | bear필터: SMA{self.sma_period} OR mom{self.mom_window}<{self.mom_threshold*100:+.0f}%"
+            if self.bear_filter_enabled
+            else ""
+        )
         logger.info(
-            f"[라우터 v2] 초기화 완료 | ADX({self.adx_period}) | "
+            f"[라우터 {version}] 초기화 완료 | ADX({self.adx_period}) | "
             f"추세 임계값: {self.adx_trend_threshold} | "
-            f"확인대기: {self.confirmation_days}일 | "
+            f"확인대기: {self.confirmation_days}일{bear_filter_msg} | "
             f"전략: 상승+횡보→거래량돌파, 하락→현금보유"
         )
 
@@ -217,13 +235,40 @@ class StrategyRouter(BaseStrategy):
             "minus_di": round(minus_di, 2),
         }
 
+        # 1차: ADX 기반 1차 국면
         if adx_val > self.adx_trend_threshold:
-            if plus_di > minus_di:
-                return "bull", regime_info
-            else:
-                return "bear", regime_info
+            adx_regime = "bull" if plus_di > minus_di else "bear"
         else:
-            return "sideways", regime_info
+            adx_regime = "sideways"
+
+        # v3: 보조 하락 필터 — SMA / 모멘텀 중 하나라도 hit 시 강제 bear
+        if self.bear_filter_enabled:
+            close = df["close"]
+            sma = close.tail(self.sma_period).mean() if len(close) >= self.sma_period else None
+            mom = (
+                current_price / close.iloc[-self.mom_window - 1] - 1
+                if len(close) > self.mom_window
+                else None
+            )
+            regime_info["sma"] = round(sma, 2) if sma is not None else None
+            regime_info["mom"] = round(mom, 4) if mom is not None else None
+
+            sma_hit = sma is not None and current_price < sma
+            mom_hit = mom is not None and mom < self.mom_threshold
+
+            if sma_hit or mom_hit:
+                triggers = []
+                if sma_hit:
+                    triggers.append(f"BTC<SMA{self.sma_period}")
+                if mom_hit:
+                    triggers.append(f"mom{self.mom_window}<{self.mom_threshold*100:+.0f}%")
+                regime_info["bear_filter_triggers"] = triggers
+                logger.info(
+                    f"[라우터 v3] bear 필터 발동 ({', '.join(triggers)}) → 강제 현금"
+                )
+                return "bear", regime_info
+
+        return adx_regime, regime_info
 
     def _confirm_regime_change(self, detected_regime: str) -> bool:
         """
@@ -301,9 +346,13 @@ class StrategyRouter(BaseStrategy):
         adx = regime_info.get("adx", 0)
         plus_di = regime_info.get("plus_di", 0)
         minus_di = regime_info.get("minus_di", 0)
+        sma_val = regime_info.get("sma")
+        mom_val = regime_info.get("mom")
+        bear_triggers = regime_info.get("bear_filter_triggers", [])
 
+        version = "v3" if self.bear_filter_enabled else "v2"
         msg = (
-            f"<b>시장 국면 전환 감지 (ADX v2)</b>\n"
+            f"<b>시장 국면 전환 감지 (ADX {version})</b>\n"
             f"{'─' * 15}\n"
             f"이전: {REGIME_NAMES.get(prev_regime, prev_regime)} ({prev_strategy_name})\n"
             f"현재: {REGIME_NAMES.get(new_regime)} ({new_strategy_name})\n"
@@ -311,6 +360,12 @@ class StrategyRouter(BaseStrategy):
             f"BTC: {btc_price:,.0f}원\n"
             f"ADX: {adx:.1f} | +DI: {plus_di:.1f} | -DI: {minus_di:.1f}\n"
         )
+        if self.bear_filter_enabled and (sma_val is not None or mom_val is not None):
+            sma_str = f"{sma_val:,.0f}" if sma_val is not None else "N/A"
+            mom_str = f"{mom_val*100:+.2f}%" if mom_val is not None else "N/A"
+            msg += f"SMA{self.sma_period}: {sma_str} | mom{self.mom_window}: {mom_str}\n"
+        if bear_triggers:
+            msg += f"bear 필터 발동: {', '.join(bear_triggers)}\n"
 
         # 하락장 전환 시에만 포지션 청산
         if new_regime == "bear":
