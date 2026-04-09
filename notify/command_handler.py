@@ -1,10 +1,10 @@
 """
-notify/command_handler.py - 텔레그램 명령어 핸들러 (v2)
+notify/command_handler.py - 텔레그램 명령어 핸들러 (v3)
 
 텔레그램 봇에서 명령어를 수신하여 현재 전략 상태 조회 등 기능을 실행합니다.
 별도 스레드에서 동작하며, main.py의 트레이딩 루프와 독립적으로 운영됩니다.
 
-v2 변경: ADX 기반 국면 판단, 거래량돌파 중심 전략 반영
+v3 변경: ADX 라우터 위에 BTC SMA200 + 30일 모멘텀 bear 필터 추가
 
 지원 명령어:
     /help       - 사용 가능한 명령어 목록
@@ -81,18 +81,29 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             total = krw + total_coin_value
 
-            # 현재 국면 (ADX 기반)
+            # 현재 국면 (ADX 기반 + v3 bear 필터)
             regime_text = "판단 중..."
             strategy_text = "초기화 중..."
             adx_text = ""
+            bear_filter_text = ""
             try:
                 saved_regime = load_strategy_state("strategy_router", "current_regime")
                 if saved_regime:
                     regime_text = REGIME_NAMES.get(saved_regime, saved_regime)
                     strategy_text = STRATEGY_NAMES.get(saved_regime, "알 수 없음")
 
-                # ADX 실시간 계산
-                df = get_ohlcv("KRW-BTC", interval="day", count=52)
+                # v3: bear 필터 설정 로드
+                import yaml as _yaml_bf
+                with open("config/settings.yaml", "r", encoding="utf-8") as _f:
+                    _bf_cfg = _yaml_bf.safe_load(_f).get("bear_filter", {}) or {}
+                _bf_enabled = _bf_cfg.get("enabled", False)
+                _sma_period = _bf_cfg.get("sma_period", 200)
+                _mom_window = _bf_cfg.get("mom_window", 30)
+                _mom_threshold = _bf_cfg.get("mom_threshold", -0.03)
+
+                # ADX + SMA/mom 실시간 계산 (SMA200 충족하도록 충분히 확보)
+                _need = max(52, _sma_period + 30) if _bf_enabled else 52
+                df = get_ohlcv("KRW-BTC", interval="day", count=_need)
                 if df is not None and len(df) >= 28:
                     adx_result = calc_adx(df["high"], df["low"], df["close"], 14)
                     adx_text = (
@@ -100,6 +111,24 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"+DI: {adx_result['plus_di']:.1f} | "
                         f"-DI: {adx_result['minus_di']:.1f}"
                     )
+
+                    if _bf_enabled:
+                        _close = df["close"]
+                        _cur = _close.iloc[-1]
+                        _sma = _close.tail(_sma_period).mean() if len(_close) >= _sma_period else None
+                        _mom = (_cur / _close.iloc[-_mom_window - 1] - 1) if len(_close) > _mom_window else None
+                        _triggers = []
+                        if _sma is not None and _cur < _sma:
+                            _triggers.append(f"BTC<SMA{_sma_period}")
+                        if _mom is not None and _mom < _mom_threshold:
+                            _triggers.append(f"mom{_mom_window}<{_mom_threshold*100:+.0f}%")
+                        _sma_str = f"{_sma:,.0f}" if _sma is not None else "N/A"
+                        _mom_str = f"{_mom*100:+.2f}%" if _mom is not None else "N/A"
+                        _trig_str = ", ".join(_triggers) if _triggers else "없음"
+                        bear_filter_text = (
+                            f"\nSMA{_sma_period}: {_sma_str} | mom{_mom_window}: {_mom_str}"
+                            f"\nbear 필터: {_trig_str}"
+                        )
             except Exception:
                 pass
 
@@ -147,11 +176,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
             text = (
-                f"<b>봇 상태 (v2)</b>\n"
+                f"<b>봇 상태 (v3)</b>\n"
                 f"─────────────────\n"
                 f"모드: {mode}\n"
                 f"전략: {strategy_text}\n"
-                f"국면: {regime_text}{adx_text}\n"
+                f"국면: {regime_text}{adx_text}{bear_filter_text}\n"
                 f"대상: 13개 코인\n"
                 f"리밸런싱: {rebal_text}\n"
                 f"{param_text}"
@@ -192,12 +221,22 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """현재 시장 국면 상세 정보를 조회합니다 (ADX 기반 v2)."""
+    """현재 시장 국면 상세 정보를 조회합니다 (ADX + v3 bear 필터)."""
     try:
+        import yaml as _yaml_r
         from src.api.upbit_client import get_ohlcv
         from src.strategies.strategy_router import calc_adx
 
-        df = get_ohlcv("KRW-BTC", interval="day", count=60)
+        # v3: bear 필터 설정 로드
+        with open("config/settings.yaml", "r", encoding="utf-8") as _f:
+            _bf_cfg = _yaml_r.safe_load(_f).get("bear_filter", {}) or {}
+        bf_enabled = _bf_cfg.get("enabled", False)
+        sma_period = _bf_cfg.get("sma_period", 200)
+        mom_window = _bf_cfg.get("mom_window", 30)
+        mom_threshold = _bf_cfg.get("mom_threshold", -0.03)
+
+        need = max(60, sma_period + 30) if bf_enabled else 60
+        df = get_ohlcv("KRW-BTC", interval="day", count=need)
         if df is None or len(df) < 30:
             await update.message.reply_text("BTC 데이터를 가져올 수 없습니다.")
             return
@@ -205,13 +244,13 @@ async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
         close = df["close"]
         current_price = close.iloc[-1]
 
-        # ADX 계산 (v2 핵심)
+        # ADX 계산
         adx_result = calc_adx(df["high"], df["low"], df["close"], 14)
         adx = adx_result["adx"]
         plus_di = adx_result["plus_di"]
         minus_di = adx_result["minus_di"]
 
-        # 국면 판단
+        # 1차: ADX 기반 국면
         if adx > 25:
             if plus_di > minus_di:
                 regime = "상승장 (Bull)"
@@ -222,6 +261,21 @@ async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             regime = "횡보장 (Sideways)"
             action = "거래량돌파 상위 5개 코인 매수 (유지)"
+
+        # 2차 v3: bear 필터 — SMA200 또는 30일 모멘텀 hit 시 강제 하락장
+        bear_sma = None
+        bear_mom = None
+        bear_triggers = []
+        if bf_enabled:
+            bear_sma = close.tail(sma_period).mean() if len(close) >= sma_period else None
+            bear_mom = (current_price / close.iloc[-mom_window - 1] - 1) if len(close) > mom_window else None
+            if bear_sma is not None and current_price < bear_sma:
+                bear_triggers.append(f"BTC&lt;SMA{sma_period}")
+            if bear_mom is not None and bear_mom < mom_threshold:
+                bear_triggers.append(f"mom{mom_window}&lt;{mom_threshold*100:+.0f}%")
+            if bear_triggers:
+                regime = "하락장 (Bear) [v3 필터]"
+                action = "전량 현금 보유 (bear 필터 발동)"
 
         # 보조 지표
         sma20 = close.rolling(20).mean().iloc[-1]
@@ -241,7 +295,7 @@ async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
             trend_strength = "추세 없음 (횡보)"
 
         text = (
-            f"<b>시장 국면 분석 (ADX v2)</b>\n"
+            f"<b>시장 국면 분석 (ADX v3)</b>\n"
             f"─────────────────\n"
             f"현재 국면: <b>{regime}</b>\n"
             f"전략 행동: {action}\n"
@@ -262,11 +316,27 @@ async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"  7일 모멘텀: {momentum_7d:+.1%}\n"
             f"  20일 모멘텀: {momentum_20d:+.1%}\n"
             f"  연환산 변동성: {volatility:.1%}\n"
+        )
+
+        if bf_enabled:
+            sma_str = f"{bear_sma:,.0f}원" if bear_sma is not None else "N/A"
+            mom_str = f"{bear_mom*100:+.2f}%" if bear_mom is not None else "N/A"
+            trig_str = ", ".join(bear_triggers) if bear_triggers else "없음"
+            text += (
+                f"─────────────────\n"
+                f"<b>v3 bear 필터</b>\n"
+                f"  SMA{sma_period}: {sma_str}\n"
+                f"  {mom_window}일 모멘텀: {mom_str} (임계 {mom_threshold*100:+.0f}%)\n"
+                f"  발동 트리거: {trig_str}\n"
+            )
+
+        text += (
             f"─────────────────\n"
-            f"<b>국면 전환 기준 (ADX)</b>\n"
+            f"<b>국면 전환 기준</b>\n"
             f"  상승장: ADX &gt; 25 AND +DI &gt; -DI\n"
             f"  하락장: ADX &gt; 25 AND -DI &gt; +DI\n"
-            f"  횡보장: ADX &lt;= 25"
+            f"  횡보장: ADX &lt;= 25\n"
+            f"  v3 강제 하락: BTC &lt; SMA{sma_period} OR {mom_window}일 모멘텀 &lt; {mom_threshold*100:+.0f}%"
         )
     except Exception as e:
         text = f"국면 분석 실패: {e}"
