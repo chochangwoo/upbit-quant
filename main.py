@@ -380,7 +380,9 @@ def main():
     mode_text = "실거래" if LIVE_TRADING else "시뮬레이션"
 
     if strategy_router:
-        strategy_desc = f"전략 라우터 v2 (ADX 국면 + 거래량돌파)"
+        _ver = "v3" if getattr(strategy_router, "bear_filter_enabled", False) else "v2"
+        _suffix = " + bear필터" if _ver == "v3" else ""
+        strategy_desc = f"전략 라우터 {_ver} (ADX 국면 + 거래량돌파{_suffix})"
         coins_desc = f"{len(strategy_router.coins)}개 코인"
     elif portfolio_executor:
         strategy_desc = f"포트폴리오 ({strategy.get_strategy_name()})"
