@@ -41,10 +41,12 @@ regime_detection:
 #   - BTC < SMA(sma_period)
 #   - BTC mom_window 일 모멘텀 < mom_threshold
 # WF 21fold 결과: v2 평균 +6.56%/MDD-18.5% → v3 +9.94%/MDD-12.7%
-# 가장 큰 손실 fold 두 개(2022-09 -41.9%, 2025-12 -22.7%)가 SMA200으로 100% 차단됨
+# 2026-04-15 bear 필터 비교 백테스트: SMA200 → SMA100 변경
+#   SMA200: 수익률 +124.1%, 샤프 0.51, MDD -53.8%
+#   SMA100: 수익률 +182.4%, 샤프 0.68, MDD -48.1% (공격형 채택)
 bear_filter:
   enabled: true
-  sma_period: 200             # BTC < SMA200 → bear
+  sma_period: 100             # BTC < SMA100 → bear (기존 200에서 변경)
   mom_window: 30              # BTC 30일 모멘텀
   mom_threshold: -0.03        # -3% 미만 → bear
 

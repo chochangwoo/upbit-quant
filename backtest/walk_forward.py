@@ -117,12 +117,23 @@ def run_walk_forward(
     ret_vals = np.array([f["수익률"] for f in fold_records], dtype=float)
     mdd_vals = np.array([f["MDD"] for f in fold_records], dtype=float)
 
+    # IQR 기반 이상치 제거 평균 (극단 fold 방어)
+    def _trimmed_mean(arr: np.ndarray) -> float:
+        q1, q3 = np.percentile(arr, [25, 75])
+        iqr = q3 - q1
+        mask = (arr >= q1 - 1.5 * iqr) & (arr <= q3 + 1.5 * iqr)
+        return float(arr[mask].mean()) if mask.any() else float(arr.mean())
+
     summary = {
         "n_folds": len(fold_records),
         "평균수익률": float(ret_vals.mean()),
+        "중앙수익률": float(np.median(ret_vals)),
         "평균샤프": float(sharpe_vals.mean()),
+        "중앙샤프": float(np.median(sharpe_vals)),
+        "trimmed샤프": _trimmed_mean(sharpe_vals),
         "샤프표준편차": float(sharpe_vals.std(ddof=0)),
         "평균MDD": float(mdd_vals.mean()),
+        "중앙MDD": float(np.median(mdd_vals)),
         "총거래수": int(sum(f["거래수"] for f in fold_records)),
     }
     return {"folds": fold_records, "summary": summary}
