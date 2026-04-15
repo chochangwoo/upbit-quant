@@ -4,7 +4,7 @@ notify/command_handler.py - 텔레그램 명령어 핸들러 (v3)
 텔레그램 봇에서 명령어를 수신하여 현재 전략 상태 조회 등 기능을 실행합니다.
 별도 스레드에서 동작하며, main.py의 트레이딩 루프와 독립적으로 운영됩니다.
 
-v3 변경: ADX 라우터 위에 BTC SMA200 + 30일 모멘텀 bear 필터 추가
+v3 변경: ADX 라우터 위에 BTC SMA + 30일 모멘텀 bear 필터 추가 (SMA 기간은 settings.yaml 참조)
 
 지원 명령어:
     /help       - 사용 가능한 명령어 목록
@@ -101,7 +101,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _mom_window = _bf_cfg.get("mom_window", 30)
                 _mom_threshold = _bf_cfg.get("mom_threshold", -0.03)
 
-                # ADX + SMA/mom 실시간 계산 (SMA200 충족하도록 충분히 확보)
+                # ADX + SMA/mom 실시간 계산 (SMA 기간만큼 데이터 확보)
                 _need = max(52, _sma_period + 30) if _bf_enabled else 52
                 df = get_ohlcv("KRW-BTC", interval="day", count=_need)
                 if df is not None and len(df) >= 28:
@@ -262,7 +262,7 @@ async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
             regime = "횡보장 (Sideways)"
             action = "거래량돌파 상위 5개 코인 매수 (유지)"
 
-        # 2차 v3: bear 필터 — SMA200 또는 30일 모멘텀 hit 시 강제 하락장
+        # 2차 v3: bear 필터 — SMA 또는 30일 모멘텀 hit 시 강제 하락장
         bear_sma = None
         bear_mom = None
         bear_triggers = []
