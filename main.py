@@ -405,15 +405,25 @@ def main():
     if strategy_router:
         # 현재 적용 중인 파라미터 표시
         vol_cfg = _yaml_cfg.get("strategies", {}).get("volume_breakout", {})
+        bf_cfg = _yaml_cfg.get("bear_filter", {}) or {}
         start_msg += (
             f"─────────────────\n"
-            f"파라미터 (2026-04-05 백테스트 반영)\n"
+            f"거래량돌파 파라미터 (2026-04-05 백테스트 반영)\n"
             f"  거래량 배율: {vol_cfg.get('vol_ratio', 1.1)}x\n"
             f"  고가 기준일: {vol_cfg.get('price_lookback', 2)}일\n"
             f"  매수 코인 수: {vol_cfg.get('top_k', 3)}개\n"
             f"  리밸런싱 주기: {vol_cfg.get('rebalance_days', 3)}일\n"
-            f"  하락장: 현금보유 (유지)\n"
         )
+        if bf_cfg.get("enabled"):
+            sma_p = bf_cfg.get("sma_period", 100)
+            mom_w = bf_cfg.get("mom_window", 30)
+            mom_t = bf_cfg.get("mom_threshold", -0.03)
+            start_msg += (
+                f"하락장 필터 (2026-04-16 SMA200→SMA{sma_p} 변경)\n"
+                f"  BTC < SMA{sma_p} 또는 {mom_w}일 모멘텀 < {mom_t*100:+.0f}% → 현금보유\n"
+            )
+        else:
+            start_msg += f"  하락장: 현금보유 (유지)\n"
     start_msg += f"─────────────────\n텔레그램 명령어: /help"
     send_message(start_msg)
 
