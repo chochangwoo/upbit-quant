@@ -119,9 +119,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         _mom = (_cur / _close.iloc[-_mom_window - 1] - 1) if len(_close) > _mom_window else None
                         _triggers = []
                         if _sma is not None and _cur < _sma:
-                            _triggers.append(f"BTC<SMA{_sma_period}")
+                            _triggers.append(f"BTC&lt;SMA{_sma_period}")
                         if _mom is not None and _mom < _mom_threshold:
-                            _triggers.append(f"mom{_mom_window}<{_mom_threshold*100:+.0f}%")
+                            _triggers.append(f"mom{_mom_window}&lt;{_mom_threshold*100:+.0f}%")
                         _sma_str = f"{_sma:,.0f}" if _sma is not None else "N/A"
                         _mom_str = f"{_mom*100:+.2f}%" if _mom is not None else "N/A"
                         _trig_str = ", ".join(_triggers) if _triggers else "없음"
