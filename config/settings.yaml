@@ -63,6 +63,9 @@ strategies:
     vol_ratio: 1.1          # 변경: 1.26 → 1.1 (거래량 배율 완화)
     top_k: 3                # 변경: 5 → 3 (집중 투자)
     rebalance_days: 3       # 유지
+    # 횡보장 완화 파라미터 (v2.1)
+    sideways_vol_ratio: 1.1       # 횡보장 거래량 비율 임계�� (기본보다 낮��)
+    sideways_momentum_min: -0.03  # 횡보장 최소 모멘텀 (-3%까지 허용)
 
   # 하락장 전략: 현금 보유
   cash_hold:

@@ -6,10 +6,13 @@ src/strategies/adaptive_volume_strategy.py - 적응형 거래량돌파 실거래
   - 하락장: 전량 현금 보유
 
 국면 감지:
-  - SMA50 + 20일 모멘텀 기반 자동 분류
-  - Bull : 가격 > SMA50 AND 20일 수익률 > +10%
-  - Bear : 가격 < SMA50 AND 20일 수익률 < -10%
-  - Sideways: 그 외
+  - SMA50 + 20일 모멘텀 기반 자동 분류 (자체)
+  - 라우터에서 ADX 기반 국면을 전달받을 수도 있음
+
+횡보장 대응 (v2.1):
+  - 횡보장일 때 vol_ratio 완화 (1.26 → 1.1), 모멘텀 조건 완화 (> -0.03)
+  - 폴백 1: 절대 모멘텀 기반 선택 (양의 모멘텀 필터 제거)
+  - 폴백 2: 저변동성 코인 선택 (역변동성 가중)
 
 성과 (800일 백테스트):
   - 샤프 1.79, 수익률 +490%, MDD -49.5%
@@ -53,6 +56,9 @@ class AdaptiveVolumeStrategy(BaseStrategy):
         momentum_window: int = 20,
         bull_threshold: float = 0.10,
         bear_threshold: float = -0.10,
+        # 횡보장 완화 파라미터
+        sideways_vol_ratio: float = 1.1,
+        sideways_momentum_min: float = -0.03,
     ):
         self.price_lookback = price_lookback
         self.vol_ratio = vol_ratio
@@ -63,9 +69,14 @@ class AdaptiveVolumeStrategy(BaseStrategy):
         self.bull_threshold = bull_threshold
         self.bear_threshold = bear_threshold
 
+        # 횡보장 완화 파라미터
+        self.sideways_vol_ratio = sideways_vol_ratio
+        self.sideways_momentum_min = sideways_momentum_min
+
         self.coins = TARGET_COINS
         self.current_regime = None
         self.current_weights = {}
+        self._external_regime = None  # 라우터에서 전달받는 국면
 
         # DB에서 마지막 리밸런싱 날짜 복원 (컨테이너 재시작 대응)
         self.last_rebalance_date = self._load_last_rebalance_date()
@@ -74,6 +85,10 @@ class AdaptiveVolumeStrategy(BaseStrategy):
 
     def get_strategy_name(self) -> str:
         return "adaptive_volume"
+
+    def set_external_regime(self, regime: str):
+        """라우터에서 ADX 기반 국면을 전달받습니다."""
+        self._external_regime = regime
 
     def _load_last_rebalance_date(self) -> date | None:
         """DB에서 마지막 리밸런싱 날짜를 복원합니다."""
@@ -90,7 +105,16 @@ class AdaptiveVolumeStrategy(BaseStrategy):
         save_strategy_state("adaptive_volume", "last_rebalance_date", d.isoformat())
 
     def _detect_regime(self) -> str:
-        """BTC 가격 기반 시장 국면을 감지합니다."""
+        """시장 국면을 감지합니다. 라우터에서 전달받은 국면을 우선 사용합니다."""
+        # 라우터에서 ADX 기반 국면을 전달받았으면 그것을 사용
+        if self._external_regime is not None:
+            regime = self._external_regime
+            if regime != self.current_regime:
+                logger.info(f"[국면] 라우터 전달 국면: {self.current_regime or '초기'} → {regime}")
+            self.current_regime = regime
+            return regime
+
+        # 자체 SMA 기반 국면 감지 (라우터 없이 단독 실행 시)
         df = get_ohlcv("KRW-BTC", interval="day", count=self.sma_window + 10)
         if df is None or len(df) < self.sma_window:
             logger.warning("[국면] BTC 데이터 부족, sideways로 판단")
@@ -119,7 +143,19 @@ class AdaptiveVolumeStrategy(BaseStrategy):
         return regime
 
     def _calc_volume_breakout_weights(self) -> dict:
-        """거래량 돌파 기반 상위 K개 코인 비중을 계산합니다."""
+        """
+        거래량 돌파 기반 상위 K개 코인 비중을 계산합니다.
+
+        횡보장일 때는 필터를 완화합니다:
+          - vol_ratio 임계값: 1.26 → 1.1 (더 낮은 거래량 급증도 포착)
+          - 모멘텀 조건: > 0 → > -0.03 (소폭 하락도 허용)
+        """
+        is_sideways = self.current_regime == "sideways"
+
+        # 횡보장일 때 완화된 파라미터 사용
+        effective_vol_ratio = self.sideways_vol_ratio if is_sideways else self.vol_ratio
+        effective_momentum_min = self.sideways_momentum_min if is_sideways else 0
+
         scores = {}
 
         for coin in self.coins:
@@ -143,8 +179,8 @@ class AdaptiveVolumeStrategy(BaseStrategy):
                 # 가격 모멘텀 (price_lookback일 수익률)
                 price_momentum = close.iloc[-1] / close.iloc[-self.price_lookback] - 1
 
-                # 거래량 비율이 기준 초과 AND 양의 모멘텀
-                if vol_ratio >= self.vol_ratio and price_momentum > 0:
+                # 횡보장: 완화된 조건 / 추세장: 기존 엄격한 조건
+                if vol_ratio >= effective_vol_ratio and price_momentum > effective_momentum_min:
                     scores[coin] = vol_ratio * (1 + price_momentum)
 
                 time.sleep(0.1)
@@ -154,8 +190,14 @@ class AdaptiveVolumeStrategy(BaseStrategy):
                 continue
 
         if not scores:
-            # 돌파 신호 없으면 모멘텀 상위 코인
+            # 폴백 1: 모멘텀 기반 선택 (횡보장에선 절대 모멘텀)
             return self._fallback_momentum_weights()
+
+        if is_sideways:
+            logger.info(
+                f"[거래량돌파·횡보] 완화 조건 적용 (vol>={effective_vol_ratio}, "
+                f"mom>={effective_momentum_min:+.0%}) → {len(scores)}개 후보"
+            )
 
         # 상위 K개 선택
         sorted_coins = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -166,27 +208,89 @@ class AdaptiveVolumeStrategy(BaseStrategy):
         return {coin: weight for coin in top}
 
     def _fallback_momentum_weights(self) -> dict:
-        """거래량 돌파 신호가 없을 때 모멘텀 기반 대체."""
+        """
+        거래량 돌파 신호가 없을 때 모멘텀 기반 대체.
+
+        횡보장에서는 양의 모멘텀 필터를 제거하고
+        절대 모멘텀 상위 K개를 선택합니다 (소폭 하락 코인도 포함).
+        """
+        is_sideways = self.current_regime == "sideways"
         momentums = {}
+
         for coin in self.coins:
             try:
                 df = get_ohlcv(coin, interval="day", count=15)
                 if df is None or len(df) < 10:
                     continue
                 mom = df["close"].iloc[-1] / df["close"].iloc[-self.price_lookback] - 1
-                if mom > 0:
-                    momentums[coin] = mom
+
+                if is_sideways:
+                    # 횡보장: 극단적 하락(-10% 이상)만 제외, 나머지 모두 후보
+                    if mom > -0.10:
+                        momentums[coin] = mom
+                else:
+                    # 추세장: 양의 모멘텀만
+                    if mom > 0:
+                        momentums[coin] = mom
+
                 time.sleep(0.1)
             except Exception:
                 continue
 
         if not momentums:
+            if is_sideways:
+                # 폴백 2: 저변동성 코인 선택 (횡보장 최종 안전망)
+                logger.info("[폴백] 모멘텀 후보 없음 → 저변동성 폴백 실행")
+                return self._fallback_low_volatility_weights()
             return {}
 
         sorted_coins = sorted(momentums.items(), key=lambda x: x[1], reverse=True)
         top = dict(sorted_coins[:self.top_k])
+
+        if is_sideways:
+            logger.info(f"[폴백·횡보] 모멘텀 상위 {len(top)}개 선택 (양+음 모멘텀 포함)")
+
         weight = 1.0 / len(top)
         return {coin: weight for coin in top}
+
+    def _fallback_low_volatility_weights(self) -> dict:
+        """
+        횡보장 최종 폴백: 저변동성 코인에 역변동성 가중 투자.
+
+        거래량돌파도 모멘텀도 실패했을 때 마지막 안전망입니다.
+        변동성이 낮은 코인 = 횡보장에서 큰 손실 없이 안정적.
+        """
+        volatilities = {}
+
+        for coin in self.coins:
+            try:
+                df = get_ohlcv(coin, interval="day", count=22)
+                if df is None or len(df) < 15:
+                    continue
+                daily_returns = df["close"].pct_change().dropna()
+                vol = daily_returns.tail(14).std()
+                if vol > 0:
+                    volatilities[coin] = vol
+                time.sleep(0.1)
+            except Exception:
+                continue
+
+        if not volatilities:
+            return {}
+
+        # 변동성 낮은 순서로 K개 선택
+        sorted_coins = sorted(volatilities.items(), key=lambda x: x[1])
+        top = dict(sorted_coins[:self.top_k])
+
+        # 역변동성 가중
+        inv_vols = {coin: 1.0 / vol for coin, vol in top.items()}
+        total = sum(inv_vols.values())
+        weights = {coin: iv / total for coin, iv in inv_vols.items()}
+
+        top_names = [c.replace("KRW-", "") for c in weights]
+        logger.info(f"[폴백·저변동성] {', '.join(top_names)} 선택 (역변동성 가중)")
+
+        return weights
 
     def check_signal(self, ticker: str = None) -> tuple:
         """
@@ -228,13 +332,14 @@ class AdaptiveVolumeStrategy(BaseStrategy):
                     "reason": f"리밸런싱 대기 ({days_since}/{self.rebalance_days}일)",
                 }
 
-        # 거래량 돌파 비중 계산
+        # 거래량 돌파 비중 계산 (횡보장 완화 + 폴백 체인 포함)
         target_weights = self._calc_volume_breakout_weights()
 
         if not target_weights:
+            logger.info(f"[{regime}] 거래량돌파 + 모멘텀 + 저변동성 폴백 모두 후보 없음")
             return None, {
                 "regime": regime,
-                "reason": "유효한 매수 신호 없음",
+                "reason": "모든 폴백 소진 — 매수 신호 없음",
             }
 
         self.last_rebalance_date = today

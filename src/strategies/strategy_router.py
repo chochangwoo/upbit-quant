@@ -150,6 +150,9 @@ class StrategyRouter(BaseStrategy):
             vol_ratio=vol_cfg.get("vol_ratio", 1.26),
             top_k=vol_cfg.get("top_k", portfolio_cfg.get("top_k", 5)),
             rebalance_days=vol_cfg.get("rebalance_days", portfolio_cfg.get("rebalance_days", 3)),
+            # 횡보장 완화 파라미터 (v2.1)
+            sideways_vol_ratio=vol_cfg.get("sideways_vol_ratio", 1.1),
+            sideways_momentum_min=vol_cfg.get("sideways_momentum_min", -0.03),
         )
 
         self.strategies = {
@@ -456,6 +459,10 @@ class StrategyRouter(BaseStrategy):
             # 4. 현재 전략 실행
             if self.current_strategy is None:
                 return None, {"regime": detected_regime, "reason": "전략 초기화 대기"}
+
+            # 현재 국면을 전략에 전달 (횡보장 필터 완화 등에 사용)
+            if hasattr(self.current_strategy, "set_external_regime"):
+                self.current_strategy.set_external_regime(self.current_regime)
 
             signal, info = self.current_strategy.check_signal(ticker)
 
